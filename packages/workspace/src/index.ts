@@ -1,5 +1,6 @@
 import { EventEmitter } from 'node:events';
 import { promises as fs, watch as watchFs, type Dirent } from 'node:fs';
+import { homedir } from 'node:os';
 import * as path from 'node:path';
 import type { DetectedFileKind, FileContent, FileMetadata, FileNode, ParsedMarkdown, WorkspaceInfo } from '@forge/ipc';
 
@@ -17,6 +18,11 @@ function isSkippableFileSystemError(error: unknown): boolean {
 function shouldIgnore(relativePath: string, showHidden = true): boolean {
   const normalized = relativePath.replaceAll('\\', '/');
   return normalized.split('/').some((part) => (part.startsWith('.') && !showHidden) || (IGNORED.has(part) && !(showHidden && part.startsWith('.')))) || IGNORED_PATH_PATTERNS.some((pattern) => pattern.test(normalized) && !showHidden);
+}
+export function shouldWatchRecursively(workspaceRoot: string, homeDirectory = homedir()): boolean {
+  const root = path.resolve(workspaceRoot);
+  const home = path.resolve(homeDirectory);
+  return root !== home && root !== path.parse(root).root && !home.startsWith(`${root}${path.sep}`);
 }
 const mimeByExtension: Record<string, string> = {
   txt: 'text/plain', md: 'text/markdown', markdown: 'text/markdown', log: 'text/plain', csv: 'text/csv', ini: 'text/plain', conf: 'text/plain', env: 'text/plain',
@@ -138,7 +144,7 @@ export class WorkspaceService extends EventEmitter {
     if (!this.rootPath) throw new Error('No workspace is open.');
     this.watcher?.close();
     try {
-      this.watcher = watchFs(this.rootPath, { recursive: true }, (_event, filename) => { if (filename && !shouldIgnore(filename.toString())) this.emit('changed', filename.toString()); });
+      this.watcher = watchFs(this.rootPath, { recursive: shouldWatchRecursively(this.rootPath) }, (_event, filename) => { if (filename && !shouldIgnore(filename.toString())) this.emit('changed', filename.toString()); });
       this.watcher.on('error', (error) => { this.watcher?.close(); if (!isSkippableFileSystemError(error)) this.emit('watch-error', error); });
     } catch (error) {
       if (!isSkippableFileSystemError(error)) throw error;
@@ -156,7 +162,10 @@ export class WorkspaceService extends EventEmitter {
       if (shouldIgnore(childRelative, showHidden) || entry.isSymbolicLink()) continue;
       const childAbsolute = path.join(absolute, entry.name);
       try {
-        const node = await this.nodeFor(childAbsolute, childRelative);
+        // A shallow Explorer listing must not probe protected directory contents.
+        const node: FileNode = entry.isDirectory() && !recursive
+          ? { path: childAbsolute, relativePath: childRelative.replaceAll('\\', '/'), name: entry.name, type: 'directory', modifiedAt: 0 }
+          : await this.nodeFor(childAbsolute, childRelative);
         budget.count += 1;
         if (entry.isDirectory() && recursive) node.children = await this.listDirectory(childAbsolute, childRelative, recursive, budget, showHidden);
         nodes.push(node);

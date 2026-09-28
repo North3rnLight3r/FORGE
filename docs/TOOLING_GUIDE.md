@@ -2,9 +2,13 @@
 
 This guide describes the tool runtime shipped by `2.5.0-beta`.
 
-FORGE's agent can use registered, available tools immediately when it supplies valid operation arguments. The model asks for the operation; FORGE validates it, injects private runtime/task context, executes it under the current OS user, records the outcome, and returns bounded evidence to the agent.
+FORGE's agent can use registered tools when the saved execution mode permits them and it supplies valid operation arguments. The model asks for the operation; FORGE validates it, injects private runtime/task context, executes it under the current OS user, records the outcome, and returns bounded evidence to the agent.
 
-This applies uniformly to file changes, shell commands, Git operations, visible-browser actions, task processes, configured web/GitHub operations, and Hermes-routed requests. Agent Actions shows the live work and lets you cancel it; it does not ask for Allow/Deny decisions.
+Settings controls execution centrally. **Disabled** hides and rejects agent tools. **Controlled** permits read-only tools. **Allow All** permits mutations within the selected filesystem scope and enabled network categories. Filesystem scope can be the active workspace, repository, chosen project tree, home directory, or the full user-accessible filesystem. FORGE resolves existing paths and symlink destinations before enforcing that scope.
+
+This applies uniformly to file changes, shell commands, Git operations, visible-browser actions, task processes, configured web/GitHub operations, and Hermes-routed requests. Agent Actions lists the registered capability catalog, availability reasons, input schema, live work, audit history, individual cancellation, and Stop All. Its Run / Test control is explicit user invocation, subject to the same saved policy.
+
+Foreground shell work is capped at two minutes and background work at ten minutes in Standard process mode. Full Local Compute may use the configured longer limits. Background tasks and autonomous task continuation have separate settings. The task runner pauses at durable state boundaries and honors redirects and cancellation between tool operations.
 
 FORGE still rejects malformed schemas, unavailable tools, invalid paths, and invalid runtime state. It keeps atomic writes and available rollback data, timeouts, cancellation, redacted audit history, secret storage, bounded tool evidence, and loop/retry protections. A failing optional command or missing file returns useful error evidence so the agent can recover rather than ending the run unnecessarily.
 

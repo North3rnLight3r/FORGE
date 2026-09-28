@@ -83,7 +83,7 @@ export default function App(): JSX.Element {
   const [preview, setPreview] = useState(false);
   const [mediaPreview, setMediaPreview] = useState<FilePreview | null>(null);
   const [metadata, setMetadata] = useState<FileMetadata | null>(null);
-  const [showHidden, setShowHidden] = useState(() => localStorage.getItem('forge.showHiddenFiles') === 'true');
+  const [showHidden, setShowHidden] = useState(() => localStorage.getItem('forge.showHiddenFiles.v2') !== 'false');
   const [updateStatus, setUpdateStatus] = useState<AppUpdateStatus | null>(null);
   const [checkingUpdate, setCheckingUpdate] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState<'api' | 'github' | null>(null);
@@ -115,7 +115,7 @@ export default function App(): JSX.Element {
   }, [showHidden, workspace]);
 
   useEffect(() => { void refresh(); }, [refresh]);
-  useEffect(() => { localStorage.setItem('forge.showHiddenFiles', String(showHidden)); }, [showHidden]);
+  useEffect(() => { localStorage.setItem('forge.showHiddenFiles.v2', String(showHidden)); }, [showHidden]);
   useEffect(() => { void call<WorkspaceInfo | null>(forgeInvoke('workspace.info', undefined)).then((info) => { if (info) setWorkspace(info); }).catch(() => undefined); }, []);
   useEffect(() => {
     if (!workspace) { setForgeLive({ status: 'stopped' }); return undefined; }
@@ -229,7 +229,7 @@ export default function App(): JSX.Element {
     setSelectedPath(node.relativePath);
     const opening = !expandedFolders.has(node.relativePath);
     setExpandedFolders((current) => { const next = new Set(current); if (opening) next.add(node.relativePath); else next.delete(node.relativePath); return next; });
-    if (opening) void call<FileNode[]>(forgeInvoke('file.list', { path: node.relativePath, recursive: false }))
+    if (opening) void call<FileNode[]>(forgeInvoke('file.list', { path: node.relativePath, recursive: false, showHidden }))
       .then((children) => setFiles((current) => replaceFileChildren(current, node.relativePath, children)))
       .catch((cause) => setError(cause instanceof Error ? cause.message : String(cause)));
   };

@@ -36,6 +36,18 @@ export default function SettingsModal({ onClose, initialSection = 'api' }: { onC
   const [embeddingApiKey, setEmbeddingApiKey] = useState('');
   const [clearEmbeddingApiKey, setClearEmbeddingApiKey] = useState(false);
   const [contextTokenBudget, setContextTokenBudget] = useState(32_000);
+  const [agentExecutionMode, setAgentExecutionMode] = useState<UserSettings['agentExecutionMode']>('controlled');
+  const [filesystemScope, setFilesystemScope] = useState<UserSettings['filesystemScope']>('workspace');
+  const [projectTreeRoot, setProjectTreeRoot] = useState('');
+  const [networkAccess, setNetworkAccess] = useState<UserSettings['networkAccess']>({ web: false, git: false, packageManager: false, general: false });
+  const [processMode, setProcessMode] = useState<UserSettings['processMode']>('standard');
+  const [processTimeoutMs, setProcessTimeoutMs] = useState(120_000);
+  const [backgroundTaskTimeoutMs, setBackgroundTaskTimeoutMs] = useState(600_000);
+  const [autonomousTaskContinuation, setAutonomousTaskContinuation] = useState(true);
+  const [autoRepairToolArguments, setAutoRepairToolArguments] = useState(true);
+  const [backgroundTasksEnabled, setBackgroundTasksEnabled] = useState(true);
+  const [autoIndex, setAutoIndex] = useState(true);
+  const [autoRepairIndex, setAutoRepairIndex] = useState(true);
   const [embeddingModels, setEmbeddingModels] = useState<ProviderModel[]>([]);
   const [embeddingStatus, setEmbeddingStatus] = useState<EmbeddingModelValidationResult | null>(null);
   const [indexStatus, setIndexStatus] = useState<SemanticIndexStatusView | null>(null);
@@ -53,7 +65,7 @@ export default function SettingsModal({ onClose, initialSection = 'api' }: { onC
 
   useEffect(() => {
     getData<UserSettings>('settings.get').then((value) => {
-      setSettings(value); setApiBaseUrl(value.apiBaseUrl); setApiModel(value.apiModel); setGithubUsername(value.githubUsername); setWebResearchEnabled(value.webResearchEnabled); setUpdateChannel(value.updateChannel); setAgentRuntime(value.agentRuntime); setHermesCommand(value.hermesCommand); setHermesEndpoint(value.hermesEndpoint); setEmbeddingEnabled(value.embeddingEnabled); setEmbeddingBaseUrl(value.embeddingBaseUrl); setEmbeddingModel(value.embeddingModel); setContextTokenBudget(value.contextTokenBudget);
+      setSettings(value); setApiBaseUrl(value.apiBaseUrl); setApiModel(value.apiModel); setGithubUsername(value.githubUsername); setWebResearchEnabled(value.webResearchEnabled); setUpdateChannel(value.updateChannel); setAgentRuntime(value.agentRuntime); setHermesCommand(value.hermesCommand); setHermesEndpoint(value.hermesEndpoint); setEmbeddingEnabled(value.embeddingEnabled); setEmbeddingBaseUrl(value.embeddingBaseUrl); setEmbeddingModel(value.embeddingModel); setContextTokenBudget(value.contextTokenBudget); setAgentExecutionMode(value.agentExecutionMode); setFilesystemScope(value.filesystemScope); setProjectTreeRoot(value.projectTreeRoot); setNetworkAccess(value.networkAccess); setProcessMode(value.processMode); setProcessTimeoutMs(value.processTimeoutMs); setBackgroundTaskTimeoutMs(value.backgroundTaskTimeoutMs); setAutonomousTaskContinuation(value.autonomousTaskContinuation); setAutoRepairToolArguments(value.autoRepairToolArguments); setBackgroundTasksEnabled(value.backgroundTasksEnabled); setAutoIndex(value.autoIndex); setAutoRepairIndex(value.autoRepairIndex);
     }).catch((cause) => setError(cause instanceof Error ? cause.message : String(cause)));
     getData<AppBuildInfo>('app.build.info').then(setBuildInfo).catch((cause) => setError(cause instanceof Error ? cause.message : String(cause)));
     getData<AgentRuntimeStatusView>('settings.runtime.status').then(setRuntimeStatus).catch((cause) => setError(cause instanceof Error ? cause.message : String(cause)));
@@ -91,7 +103,7 @@ export default function SettingsModal({ onClose, initialSection = 'api' }: { onC
   const save = async (): Promise<void> => {
     setBusy(true); setError(null); setMessage(null);
     try {
-      const saved = await getData<UserSettings>('settings.save', { apiBaseUrl, apiModel, apiKey, clearApiKey, githubUsername, githubToken, clearGithubToken, webResearchEnabled, updateChannel, agentRuntime, hermesCommand, hermesEndpoint, embeddingEnabled, embeddingProvider: 'openai-compatible', embeddingBaseUrl, embeddingModel, embeddingApiKey, clearEmbeddingApiKey, contextTokenBudget });
+      const saved = await getData<UserSettings>('settings.save', { apiBaseUrl, apiModel, apiKey, clearApiKey, githubUsername, githubToken, clearGithubToken, webResearchEnabled, updateChannel, agentRuntime, hermesCommand, hermesEndpoint, embeddingEnabled, embeddingProvider: 'openai-compatible', embeddingBaseUrl, embeddingModel, embeddingApiKey, clearEmbeddingApiKey, contextTokenBudget, agentExecutionMode, filesystemScope, projectTreeRoot, networkAccess, processMode, processTimeoutMs, backgroundTaskTimeoutMs, autonomousTaskContinuation, autoRepairToolArguments, backgroundTasksEnabled, autoIndex, autoRepairIndex });
       setSettings(saved); setApiKey(''); setGithubToken(''); setEmbeddingApiKey(''); setClearApiKey(false); setClearGithubToken(false); setClearEmbeddingApiKey(false); setMessage('Settings saved securely.');
       setRuntimeStatus(await getData<AgentRuntimeStatusView>('settings.runtime.status'));
       setSkills(await getData<SkillDescriptor[]>('agent.skills.list').catch(() => []));
@@ -181,9 +193,29 @@ export default function SettingsModal({ onClose, initialSection = 'api' }: { onC
         </section>
 
         <section className="settings-section">
+          <div className="settings-section-title"><div><span>AGENT EXECUTION POLICY</span><h3>Tooling and autonomy</h3></div><em className={agentExecutionMode === 'allow-all' ? 'configured' : ''}>{agentExecutionMode === 'allow-all' ? 'Allow All' : agentExecutionMode === 'disabled' ? 'Disabled' : 'Controlled'}</em></div>
+          <label>Agent execution<select value={agentExecutionMode} onChange={(event) => setAgentExecutionMode(event.target.value as UserSettings['agentExecutionMode'])}><option value="disabled">Disabled</option><option value="controlled">Controlled</option><option value="allow-all">Allow All</option></select></label>
+          <label>Filesystem scope<select value={filesystemScope} onChange={(event) => setFilesystemScope(event.target.value as UserSettings['filesystemScope'])}><option value="workspace">Current workspace only</option><option value="repository">Current Git repository</option><option value="project-tree">Selected project tree</option><option value="home">User home</option><option value="full">Full user-accessible filesystem</option></select></label>
+          {filesystemScope === 'project-tree' && <label>Selected project tree root<input value={projectTreeRoot} onChange={(event) => setProjectTreeRoot(event.target.value)} placeholder="/Users/name/Projects" /></label>}
+          <fieldset><legend>Network access</legend>
+            {([['web', 'Web read-only'], ['git', 'Git'], ['packageManager', 'Package manager'], ['general', 'General network']] as const).map(([key, label]) => <label className="settings-check" key={key}><input type="checkbox" checked={networkAccess[key]} onChange={(event) => setNetworkAccess((current) => ({ ...current, [key]: event.target.checked }))} /> {label}</label>)}
+          </fieldset>
+          <label>Process mode<select value={processMode} onChange={(event) => setProcessMode(event.target.value as UserSettings['processMode'])}><option value="standard">Standard</option><option value="full-local-compute">Full local compute</option></select></label>
+          <label>Process timeout (seconds)<input type="number" min={1} max={600} value={Math.round(processTimeoutMs / 1000)} onChange={(event) => setProcessTimeoutMs(Number(event.target.value) * 1000)} /></label>
+          <label>Background task timeout (minutes)<input type="number" min={1} max={1440} value={Math.round(backgroundTaskTimeoutMs / 60_000)} onChange={(event) => setBackgroundTaskTimeoutMs(Number(event.target.value) * 60_000)} /></label>
+          <p className="settings-help">Tool calls currently execute serially to preserve task-step ordering.</p>
+          <label className="settings-check"><input type="checkbox" checked={autonomousTaskContinuation} onChange={(event) => setAutonomousTaskContinuation(event.target.checked)} /> Autonomous task continuation</label>
+          <label className="settings-check"><input type="checkbox" checked={autoRepairToolArguments} onChange={(event) => setAutoRepairToolArguments(event.target.checked)} /> Automatically repair deterministic tool arguments</label>
+          <label className="settings-check"><input type="checkbox" checked={backgroundTasksEnabled} onChange={(event) => setBackgroundTasksEnabled(event.target.checked)} /> Background task processes</label>
+          <label className="settings-check"><input type="checkbox" checked={autoIndex} onChange={(event) => setAutoIndex(event.target.checked)} /> Automatically index workspace knowledge</label>
+          <label className="settings-check"><input type="checkbox" checked={autoRepairIndex} onChange={(event) => setAutoRepairIndex(event.target.checked)} /> Automatically repair a degraded semantic index</label>
+          <p className="settings-help">Allow All removes repeated per-tool authorization inside the selected filesystem and network scopes. OS permissions, audit logging, cancellation, rollback, and secret redaction remain in force.</p>
+        </section>
+
+        <section className="settings-section">
           <div className="settings-section-title"><div><span>INTELLIGENCE · SEMANTIC CONTEXT</span><h3>Embedding and semantic memory</h3></div><em className={indexStatus?.state === 'ready' ? 'configured' : ''}>{indexStatus?.state ?? 'Not initialized'}</em></div>
           <label className="settings-check"><input type="checkbox" checked={embeddingEnabled} onChange={(event) => setEmbeddingEnabled(event.target.checked)} /> Enable semantic context</label>
-          <p className="settings-help">Optional and off on fresh installs. Semantic discovery runs only for broad questions without sufficient direct evidence; explicit file/Git requests and investigations stay tool-first. Local Ollama is unloaded after each semantic operation.</p>
+          <p className="settings-help">Semantic context and automatic indexing are enabled by default. A configured embedding provider is required; failures remain visible in index status. Semantic discovery supplements broad questions while direct file/Git evidence stays authoritative.</p>
           <label>Embedding API base URL<input value={embeddingBaseUrl} onChange={(event) => setEmbeddingBaseUrl(event.target.value)} placeholder="http://127.0.0.1:11434/v1" /></label>
           <label>Embedding model<input list="forge-embedding-models" value={embeddingModel} onChange={(event) => { setEmbeddingModel(event.target.value); setEmbeddingStatus(null); }} placeholder="qwen3-embedding:0.6b" /></label>
           <datalist id="forge-embedding-models">{embeddingModels.map((model) => <option key={model.id} value={model.id}>{model.ownedBy}</option>)}</datalist>

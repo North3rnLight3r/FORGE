@@ -1,7 +1,7 @@
 import { app, shell, safeStorage, BrowserWindow, dialog, BrowserView, ipcMain, clipboard } from "electron";
 import { randomUUID, createHash } from "node:crypto";
 import { promises, watch, existsSync } from "node:fs";
-import os, { platform, homedir, totalmem, release, hostname } from "node:os";
+import os, { homedir, platform, totalmem, release, hostname } from "node:os";
 import * as path from "node:path";
 import path__default, { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -2133,7 +2133,10 @@ const IPC_CHANNELS = {
   toolRequestsList: "tool.requests.list",
   toolRequestCancel: "tool.request.cancel",
   toolActionsList: "tool.actions.list",
+  toolCatalog: "tool.catalog",
+  toolExecute: "tool.execute",
   editorDirtyUpdate: "editor.dirty.update",
+  agentStopAll: "agent.stop.all",
   terminalCreate: "terminal.create",
   terminalList: "terminal.list",
   terminalInput: "terminal.input",
@@ -2149,6 +2152,7 @@ const IPC_CHANNELS = {
   tasksResume: "tasks.resume",
   tasksPause: "tasks.pause",
   tasksCancel: "tasks.cancel",
+  tasksRedirect: "tasks.redirect",
   tasksDelete: "tasks.delete",
   tasksRetryStep: "tasks.retry.step",
   tasksHandoff: "tasks.handoff",
@@ -2189,6 +2193,11 @@ function isSkippableFileSystemError(error) {
 function shouldIgnore(relativePath2, showHidden = true) {
   const normalized = relativePath2.replaceAll("\\", "/");
   return normalized.split("/").some((part) => part.startsWith(".") && !showHidden || IGNORED.has(part) && !(showHidden && part.startsWith("."))) || IGNORED_PATH_PATTERNS.some((pattern) => pattern.test(normalized) && !showHidden);
+}
+function shouldWatchRecursively(workspaceRoot, homeDirectory = homedir()) {
+  const root = path.resolve(workspaceRoot);
+  const home = path.resolve(homeDirectory);
+  return root !== home && root !== path.parse(root).root && !home.startsWith(`${root}${path.sep}`);
 }
 const mimeByExtension = {
   txt: "text/plain",
@@ -2408,7 +2417,7 @@ class WorkspaceService extends EventEmitter {
     if (!this.rootPath) throw new Error("No workspace is open.");
     this.watcher?.close();
     try {
-      this.watcher = watch(this.rootPath, { recursive: true }, (_event, filename) => {
+      this.watcher = watch(this.rootPath, { recursive: shouldWatchRecursively(this.rootPath) }, (_event, filename) => {
         if (filename && !shouldIgnore(filename.toString())) this.emit("changed", filename.toString());
       });
       this.watcher.on("error", (error) => {
@@ -2434,7 +2443,7 @@ class WorkspaceService extends EventEmitter {
       if (shouldIgnore(childRelative, showHidden) || entry.isSymbolicLink()) continue;
       const childAbsolute = path.join(absolute, entry.name);
       try {
-        const node = await this.nodeFor(childAbsolute, childRelative);
+        const node = entry.isDirectory() && !recursive ? { path: childAbsolute, relativePath: childRelative.replaceAll("\\", "/"), name: entry.name, type: "directory", modifiedAt: 0 } : await this.nodeFor(childAbsolute, childRelative);
         budget.count += 1;
         if (entry.isDirectory() && recursive) node.children = await this.listDirectory(childAbsolute, childRelative, recursive, budget, showHidden);
         nodes.push(node);
@@ -3808,13 +3817,13 @@ function openHealthyDatabase(SQL, bytes) {
     throw error;
   }
 }
-function malformedDatabaseError(filePath, primaryError, backupError) {
+function malformedDatabaseError(filePath2, primaryError, backupError) {
   const detail = primaryError instanceof Error ? primaryError.message : String(primaryError);
   const backupDetail = backupError === void 0 ? "No last-known-good backup exists." : `The backup is also invalid: ${backupError instanceof Error ? backupError.message : String(backupError)}`;
-  return new Error(`Workspace database is malformed: ${filePath}. ${backupDetail} The original was not changed. SQLite reported: ${detail}`);
+  return new Error(`Workspace database is malformed: ${filePath2}. ${backupDetail} The original was not changed. SQLite reported: ${detail}`);
 }
-async function writeSyncedFile(filePath, bytes) {
-  const handle = await promises.open(filePath, "wx");
+async function writeSyncedFile(filePath2, bytes) {
+  const handle = await promises.open(filePath2, "wx");
   try {
     await handle.writeFile(bytes);
     await handle.sync();
@@ -4437,7 +4446,7 @@ class SemanticIndexer {
       return await this.embeddings.withModelSession(() => this.storage.withSemanticWriteBatch(async () => {
         ensureCurrent();
         if (request.rebuild) await this.storage.clearSemanticIndex();
-        const files = request.full ? flattenFiles(await this.workspace.list("", { recursive: true, maxEntries: 2e4, showHidden: false })).filter(indexableFile) : [...request.paths].map((filePath) => ({ path: filePath, extension: path.extname(filePath).slice(1) })).filter(indexableFile);
+        const files = request.full ? flattenFiles(await this.workspace.list("", { recursive: true, maxEntries: 2e4, showHidden: false })).filter(indexableFile) : [...request.paths].map((filePath2) => ({ path: filePath2, extension: path.extname(filePath2).slice(1) })).filter(indexableFile);
         let embedded = 0;
         const presentSourceIds = [];
         let sourceBatch = [];
@@ -4486,9 +4495,9 @@ class SemanticIndexer {
       return this.storage.setSemanticIndexState({ state: "degraded", embeddingModel: config.model, lastError: message });
     }
   }
-  async supersedeMissingPath(filePath) {
-    const existing = await this.storage.semanticRecords({ sourceId: filePath, includeSuperseded: true, limit: 100 });
-    for (const sourceType of new Set(existing.map((record) => record.sourceType))) await this.storage.supersedeSemanticSource(sourceType, filePath, "missing", []);
+  async supersedeMissingPath(filePath2) {
+    const existing = await this.storage.semanticRecords({ sourceId: filePath2, includeSuperseded: true, limit: 100 });
+    for (const sourceType of new Set(existing.map((record) => record.sourceType))) await this.storage.supersedeSemanticSource(sourceType, filePath2, "missing", []);
   }
   async indexDurableState() {
     let embedded = 0;
@@ -4544,8 +4553,8 @@ class SemanticIndexCancelledError extends Error {
 function indexableFile(file) {
   return !isSensitiveOrGeneratedPath(file.path) && INDEXABLE_EXTENSIONS.has((file.extension ?? path.extname(file.path).slice(1)).toLowerCase());
 }
-function classifySource(filePath) {
-  const normalized = filePath.toLowerCase();
+function classifySource(filePath2) {
+  const normalized = filePath2.toLowerCase();
   const extension = path.extname(normalized);
   if (/\.(?:json|jsonc|ya?ml|toml|ini|conf)$/.test(extension) || /(?:^|\/)package\.json$/.test(normalized)) return "configuration";
   if (/\.(?:md|markdown|txt)$/.test(extension)) return /(?:architecture|decision|adr)/.test(normalized) ? "architecture" : "documentation";
@@ -7312,12 +7321,24 @@ class SettingsService {
       agentRuntime: this.data.agentRuntime === "hermes" ? "hermes" : "native",
       hermesCommand: this.data.hermesCommand ?? "",
       hermesEndpoint: this.data.hermesEndpoint ?? "",
-      embeddingEnabled: this.data.embeddingEnabled === true,
+      embeddingEnabled: this.data.embeddingEnabled !== false,
       embeddingProvider: "openai-compatible",
       embeddingBaseUrl: this.data.embeddingBaseUrl ?? process.env.FORGE_EMBEDDING_BASE_URL ?? DEFAULT_EMBEDDING_BASE_URL,
       embeddingModel: this.data.embeddingModel ?? process.env.FORGE_EMBEDDING_MODEL ?? DEFAULT_EMBEDDING_MODEL,
       embeddingApiKeyConfigured: Boolean(this.data.embeddingApiKey || process.env.FORGE_EMBEDDING_API_KEY),
-      contextTokenBudget: Math.min(128e3, Math.max(4e3, this.data.contextTokenBudget ?? DEFAULT_CONTEXT_TOKEN_BUDGET))
+      contextTokenBudget: Math.min(128e3, Math.max(4e3, this.data.contextTokenBudget ?? DEFAULT_CONTEXT_TOKEN_BUDGET)),
+      agentExecutionMode: this.data.agentExecutionMode === "disabled" || this.data.agentExecutionMode === "allow-all" ? this.data.agentExecutionMode : "controlled",
+      filesystemScope: ["repository", "project-tree", "home", "full"].includes(this.data.filesystemScope ?? "") ? this.data.filesystemScope : "workspace",
+      projectTreeRoot: this.data.projectTreeRoot ?? "",
+      networkAccess: { web: this.data.networkAccess?.web === true, git: this.data.networkAccess?.git === true, packageManager: this.data.networkAccess?.packageManager === true, general: this.data.networkAccess?.general === true },
+      processMode: this.data.processMode === "full-local-compute" ? "full-local-compute" : "standard",
+      processTimeoutMs: Math.min(6e5, Math.max(1e3, this.data.processTimeoutMs ?? 12e4)),
+      backgroundTaskTimeoutMs: Math.min(864e5, Math.max(1e3, this.data.backgroundTaskTimeoutMs ?? 6e5)),
+      autonomousTaskContinuation: this.data.autonomousTaskContinuation !== false,
+      autoRepairToolArguments: this.data.autoRepairToolArguments !== false,
+      backgroundTasksEnabled: this.data.backgroundTasksEnabled !== false,
+      autoIndex: this.data.autoIndex !== false,
+      autoRepairIndex: this.data.autoRepairIndex !== false
     };
   }
   async save(request) {
@@ -7333,11 +7354,23 @@ class SettingsService {
     const hermesEndpoint = request.hermesEndpoint?.trim();
     if (hermesEndpoint) this.data.hermesEndpoint = this.validateUrl(hermesEndpoint);
     else delete this.data.hermesEndpoint;
-    this.data.embeddingEnabled = request.embeddingEnabled === true;
+    this.data.embeddingEnabled = request.embeddingEnabled ?? this.data.embeddingEnabled ?? true;
     this.data.embeddingProvider = "openai-compatible";
     this.data.embeddingBaseUrl = this.validateUrl(request.embeddingBaseUrl || DEFAULT_EMBEDDING_BASE_URL);
     this.data.embeddingModel = request.embeddingModel?.trim() || DEFAULT_EMBEDDING_MODEL;
     this.data.contextTokenBudget = Math.min(128e3, Math.max(4e3, Math.round(request.contextTokenBudget ?? DEFAULT_CONTEXT_TOKEN_BUDGET)));
+    this.data.agentExecutionMode = request.agentExecutionMode === "disabled" || request.agentExecutionMode === "allow-all" ? request.agentExecutionMode : "controlled";
+    this.data.filesystemScope = ["repository", "project-tree", "home", "full"].includes(request.filesystemScope ?? "") ? request.filesystemScope : "workspace";
+    this.data.projectTreeRoot = request.projectTreeRoot?.trim().slice(0, 4096) ?? "";
+    this.data.networkAccess = { web: request.networkAccess?.web === true, git: request.networkAccess?.git === true, packageManager: request.networkAccess?.packageManager === true, general: request.networkAccess?.general === true };
+    this.data.processMode = request.processMode === "full-local-compute" ? request.processMode : "standard";
+    this.data.processTimeoutMs = Math.min(6e5, Math.max(1e3, Math.round(request.processTimeoutMs ?? 12e4)));
+    this.data.backgroundTaskTimeoutMs = Math.min(864e5, Math.max(1e3, Math.round(request.backgroundTaskTimeoutMs ?? 6e5)));
+    this.data.autonomousTaskContinuation = request.autonomousTaskContinuation !== false;
+    this.data.autoRepairToolArguments = request.autoRepairToolArguments !== false;
+    this.data.backgroundTasksEnabled = request.backgroundTasksEnabled !== false;
+    this.data.autoIndex = request.autoIndex !== false;
+    this.data.autoRepairIndex = request.autoRepairIndex !== false;
     if (request.clearApiKey) delete this.data.apiKey;
     else if (request.apiKey?.trim()) this.data.apiKey = await this.encrypt(request.apiKey.trim());
     if (request.clearGithubToken) delete this.data.githubToken;
@@ -7351,6 +7384,17 @@ class SettingsService {
     await promises.chmod(this.settingsPath, 384);
     return this.publicSettings();
   }
+  lastWorkspacePath() {
+    return this.data.lastWorkspacePath;
+  }
+  async rememberWorkspacePath(rootPath) {
+    this.data.lastWorkspacePath = rootPath;
+    const temporaryPath = `${this.settingsPath}.tmp`;
+    await promises.writeFile(temporaryPath, `${JSON.stringify(this.data, null, 2)}
+`, { mode: 384 });
+    await promises.rename(temporaryPath, this.settingsPath);
+    await promises.chmod(this.settingsPath, 384);
+  }
   async apiConfiguration(overrides = {}) {
     return {
       apiKey: overrides.apiKey?.trim() || (this.data.apiKey ? await this.decrypt(this.data.apiKey) : process.env.OPENAI_API_KEY),
@@ -7360,7 +7404,7 @@ class SettingsService {
   }
   async embeddingConfiguration(overrides = {}) {
     return {
-      enabled: overrides.enabled ?? this.data.embeddingEnabled === true,
+      enabled: overrides.enabled ?? this.data.embeddingEnabled !== false,
       provider: "openai-compatible",
       apiKey: overrides.apiKey?.trim() || (this.data.embeddingApiKey ? await this.decrypt(this.data.embeddingApiKey) : process.env.FORGE_EMBEDDING_API_KEY),
       baseUrl: this.validateUrl(overrides.baseUrl || this.data.embeddingBaseUrl || process.env.FORGE_EMBEDDING_BASE_URL || DEFAULT_EMBEDDING_BASE_URL),
@@ -7447,44 +7491,57 @@ const MAX_TEXT_BYTES = 2e6;
 const MAX_RANGED_TEXT_BYTES = 64e6;
 const MAX_SEARCH_RESULTS = 2e4;
 const MAX_LIST_ENTRIES = 1e4;
-const SKIPPED_WORKSPACE_NAMES = /* @__PURE__ */ new Set([".git", ".forge", ".obsidian", "node_modules", "dist_electron", "out"]);
-const SKIPPED_WORKSPACE_PATHS = [/(?:^|[/])\.local[/]share[/]containers(?:[/]|$)/i, /(?:^|[/])\.cache(?:[/]|$)/i];
 const textOutput = z.object({ success: z.boolean() }).passthrough();
-const relativePath = z.string().min(1).max(4096).refine((value) => !path__default.isAbsolute(value) && !value.split(/[\\/]/).includes(".."), "Path must be workspace-relative and may not traverse upward.");
+const filePath = z.string().min(1).max(4096).refine((value) => !value.includes("\0"), "Path must not contain a null byte.");
+const relativePath = filePath.refine((value) => !path__default.isAbsolute(value) && !value.split(/[\\/]/).includes(".."), "Repository path must be relative.");
 const reason = z.string().min(3).max(2e3);
 const inside = (root, candidate) => candidate === root || candidate.startsWith(`${root}${path__default.sep}`);
 const skippableFileSystemError = (error) => error instanceof Error && "code" in error && ["EACCES", "EPERM", "ENOENT"].includes(String(error.code));
-const skippedWorkspacePath = (root, candidate) => {
-  const relative = path__default.relative(root, candidate).replaceAll("\\", "/");
-  return relative.split("/").some((part) => SKIPPED_WORKSPACE_NAMES.has(part)) || SKIPPED_WORKSPACE_PATHS.some((pattern) => pattern.test(relative));
-};
-async function resolveContainedPath(rootValue, relative, allowMissing = false) {
-  if (!relative || path__default.isAbsolute(relative) || relative.split(/[\\/]/).includes("..")) throw new Error("Path must be workspace-relative and may not traverse upward.");
-  const root = await promises.realpath(rootValue);
-  const candidate = path__default.resolve(root, relative);
-  if (!inside(root, candidate)) throw new Error("Path escapes the active workspace.");
-  let inspected = candidate;
-  if (allowMissing) {
-    while (inspected !== root) {
-      try {
-        await promises.lstat(inspected);
-        break;
-      } catch (error) {
-        if (!(error instanceof Error) || !("code" in error) || error.code !== "ENOENT") throw error;
-        inspected = path__default.dirname(inspected);
-      }
+const displayPath = (root, candidate) => inside(root, candidate) ? path__default.relative(root, candidate) || "." : candidate;
+function isWithin(root, candidate) {
+  const relative = path__default.relative(root, candidate);
+  return relative === "" || !relative.startsWith(`..${path__default.sep}`) && relative !== ".." && !path__default.isAbsolute(relative);
+}
+async function resolveExistingParent(candidate, allowMissing) {
+  if (!allowMissing) return promises.realpath(candidate);
+  const suffix = [];
+  let existing = candidate;
+  while (true) {
+    try {
+      await promises.lstat(existing);
+      return path__default.resolve(await promises.realpath(existing), ...suffix.reverse());
+    } catch (error) {
+      if (!(error instanceof Error) || !("code" in error) || error.code !== "ENOENT") throw error;
+      const parent = path__default.dirname(existing);
+      if (parent === existing) throw error;
+      suffix.push(path__default.basename(existing));
+      existing = parent;
     }
   }
-  const resolved = await promises.realpath(inspected);
-  if (!inside(root, resolved)) throw new Error("Symlink resolves outside the active workspace.");
-  if (!allowMissing && !inside(root, await promises.realpath(candidate))) throw new Error("Symlink resolves outside the active workspace.");
+}
+async function resolveScopedPath(policy, requestedPath, allowMissing = false) {
+  if (!requestedPath || requestedPath.includes("\0")) throw new Error("A non-empty path without null bytes is required.");
+  const requested = requestedPath === "~" ? os.homedir() : requestedPath.startsWith("~/") || requestedPath.startsWith(`~${path__default.sep}`) ? path__default.join(os.homedir(), requestedPath.slice(2)) : requestedPath;
+  const candidate = await resolveExistingParent(path__default.resolve(policy.workspaceRoot, requested), allowMissing);
+  let allowedRoot;
+  if (policy.scope === "workspace") allowedRoot = await promises.realpath(policy.workspaceRoot);
+  else if (policy.scope === "repository") {
+    if (!policy.repositoryRoot) throw new Error("Repository scope is unavailable because the active Git repository root could not be identified.");
+    allowedRoot = await promises.realpath(policy.repositoryRoot);
+  } else if (policy.scope === "project-tree") {
+    if (!policy.projectTreeRoot) throw new Error("Project-tree scope requires a selected project root in Settings.");
+    allowedRoot = await promises.realpath(policy.projectTreeRoot);
+  } else if (policy.scope === "home") allowedRoot = await promises.realpath(os.homedir());
+  if (allowedRoot && !isWithin(allowedRoot, candidate)) {
+    throw new Error(`SCOPE_FAILURE: Resolved path ${candidate} is outside the configured ${policy.scope} scope (${allowedRoot}).`);
+  }
   return candidate;
 }
-function unifiedDiff(filePath, before, after) {
+function unifiedDiff(filePath2, before, after) {
   if (before === after) return "";
   const oldLines = before.split("\n");
   const newLines = after.split("\n");
-  const lines = [`--- a/${filePath}`, `+++ b/${filePath}`, `@@ -1,${oldLines.length} +1,${newLines.length} @@`];
+  const lines = [`--- a/${filePath2}`, `+++ b/${filePath2}`, `@@ -1,${oldLines.length} +1,${newLines.length} @@`];
   let prefix = 0;
   while (prefix < oldLines.length && prefix < newLines.length && oldLines[prefix] === newLines[prefix]) {
     lines.push(` ${oldLines[prefix]}`);
@@ -7515,7 +7572,9 @@ async function atomicWrite(absolute, content, encoding = "utf8", mode) {
 }
 async function backupPath(root, relative) {
   const hash2 = createHash("sha256").update(`${Date.now()}\0${relative}`).digest("hex").slice(0, 12);
-  const destination = path__default.join(root, ".forge", "backups", `${Date.now()}-${hash2}`, relative);
+  const absolute = path__default.resolve(root, relative);
+  const backupName = inside(root, absolute) ? path__default.relative(root, absolute) : path__default.join("external", path__default.basename(absolute));
+  const destination = path__default.join(root, ".forge", "backups", `${Date.now()}-${hash2}`, backupName);
   await promises.mkdir(path__default.dirname(destination), { recursive: true });
   return destination;
 }
@@ -7523,16 +7582,16 @@ const definition = (value) => value;
 function createToolRegistry() {
   const registry = new ToolRegistry();
   const base = { outputSchema: textOutput, cancellable: true };
-  registry.register(definition({ ...base, name: "file.list", purpose: "Discover workspace files from the root first; use a nested path only after it has been observed. Continue with the returned offset when truncated.", inputSchema: z.object({ path: z.string().max(4096).default("."), recursive: z.boolean().default(false), maxDepth: z.number().int().min(0).max(20).default(2), maxEntries: z.number().int().min(1).max(MAX_LIST_ENTRIES).default(500), offset: z.number().int().min(0).max(1e6).default(0) }), sideEffect: "read", workspaceBoundary: "required", timeoutMs: 1e4, audit: { category: "filesystem", recordsAffectedPaths: false, recordsExitCode: false, externalDataTransfer: false }, networkAccess: false, describeTarget: (input) => input.path ?? ".", describeEffect: () => "Read a bounded workspace directory listing, beginning at the workspace root by default." }));
-  registry.register(definition({ ...base, name: "file.read", purpose: "Read a bounded range of a supported workspace text file. Use file.readBinary for binary content.", inputSchema: z.object({ path: relativePath, startLine: z.number().int().min(1).optional(), endLine: z.number().int().min(1).optional(), offset: z.number().int().min(0).max(MAX_RANGED_TEXT_BYTES).optional(), maxCharacters: z.number().int().min(1).max(2e5).default(12e3) }).refine((input) => input.endLine === void 0 || input.startLine === void 0 || input.endLine >= input.startLine, "endLine must not precede startLine.").refine((input) => input.offset === void 0 || input.startLine === void 0 && input.endLine === void 0, "offset cannot be combined with line ranges."), sideEffect: "read", workspaceBoundary: "required", timeoutMs: 1e4, audit: { category: "filesystem", recordsAffectedPaths: false, recordsExitCode: false, externalDataTransfer: false }, networkAccess: false, describeTarget: (input) => input.path, describeEffect: () => "Read bounded text without changing the workspace." }));
-  registry.register(definition({ ...base, name: "file.read.binary", purpose: "Read bounded binary content as base64 together with file metadata.", inputSchema: z.object({ path: relativePath, maxBytes: z.number().int().min(1).max(25e6).default(2e6) }), sideEffect: "read", workspaceBoundary: "required", timeoutMs: 2e4, audit: { category: "filesystem", recordsAffectedPaths: false, recordsExitCode: false, externalDataTransfer: false }, networkAccess: false, describeTarget: (input) => input.path, describeEffect: () => "Read binary bytes as bounded base64 without changing the workspace." }));
-  registry.register(definition({ ...base, name: "file.search", purpose: "Search supported workspace text files. When truncated, continue using the returned offset.", inputSchema: z.object({ query: z.string().min(1).max(500), path: z.string().max(4096).default("."), caseSensitive: z.boolean().default(false), maxResults: z.number().int().min(1).max(MAX_SEARCH_RESULTS).default(50), offset: z.number().int().min(0).max(1e5).default(0) }), sideEffect: "read", workspaceBoundary: "required", timeoutMs: 2e4, audit: { category: "filesystem", recordsAffectedPaths: false, recordsExitCode: false, externalDataTransfer: false }, networkAccess: false, describeTarget: (input) => input.path ?? ".", describeEffect: (input) => `Search workspace text for ${JSON.stringify(input.query)}.` }));
-  registry.register(definition({ ...base, name: "file.create", purpose: "Create a workspace file.", inputSchema: z.object({ path: relativePath, content: z.string().max(MAX_TEXT_BYTES), reason }), sideEffect: "workspace-write", workspaceBoundary: "required", timeoutMs: 1e4, audit: { category: "filesystem", recordsAffectedPaths: true, recordsExitCode: false, externalDataTransfer: false }, networkAccess: false, describeTarget: (input) => input.path, describeEffect: () => "Create a new file atomically." }));
-  registry.register(definition({ ...base, name: "file.write", purpose: "Replace a workspace text file after showing a diff.", inputSchema: z.object({ path: relativePath, content: z.string().max(MAX_TEXT_BYTES), reason }), sideEffect: "workspace-write", workspaceBoundary: "required", timeoutMs: 1e4, audit: { category: "filesystem", recordsAffectedPaths: true, recordsExitCode: false, externalDataTransfer: false }, networkAccess: false, describeTarget: (input) => input.path, describeEffect: () => "Atomically write the approved diff with a rollback backup." }));
-  registry.register(definition({ ...base, name: "file.patch", purpose: "Apply a targeted workspace text replacement.", inputSchema: z.object({ path: relativePath, expected: z.string().min(1).max(MAX_TEXT_BYTES), replacement: z.string().max(MAX_TEXT_BYTES), replaceAll: z.boolean().default(false), reason }), sideEffect: "workspace-write", workspaceBoundary: "required", timeoutMs: 1e4, audit: { category: "filesystem", recordsAffectedPaths: true, recordsExitCode: false, externalDataTransfer: false }, networkAccess: false, describeTarget: (input) => input.path, describeEffect: () => "Apply the displayed targeted patch atomically." }));
-  for (const name of ["file.rename", "file.move"]) registry.register(definition({ ...base, name, purpose: "Move a workspace path without overwriting.", inputSchema: z.object({ from: relativePath, to: relativePath, reason }), sideEffect: "workspace-write", workspaceBoundary: "required", timeoutMs: 1e4, audit: { category: "filesystem", recordsAffectedPaths: true, recordsExitCode: false, externalDataTransfer: false }, networkAccess: false, describeTarget: (input) => `${input.from} → ${input.to}`, describeEffect: () => "Move the path without overwriting the destination." }));
-  registry.register(definition({ ...base, name: "directory.create", purpose: "Create a workspace directory.", inputSchema: z.object({ path: relativePath, reason }), sideEffect: "workspace-write", workspaceBoundary: "required", timeoutMs: 1e4, audit: { category: "filesystem", recordsAffectedPaths: true, recordsExitCode: false, externalDataTransfer: false }, networkAccess: false, describeTarget: (input) => input.path, describeEffect: () => "Create a directory inside the workspace." }));
-  registry.register(definition({ ...base, name: "file.delete", purpose: "Delete a workspace path after creating a rollback backup.", inputSchema: z.object({ path: relativePath, reason }), sideEffect: "destructive", workspaceBoundary: "required", timeoutMs: 2e4, audit: { category: "filesystem", recordsAffectedPaths: true, recordsExitCode: false, externalDataTransfer: false }, networkAccess: false, describeTarget: (input) => input.path, describeEffect: () => "Back up then delete the selected source path." }));
+  registry.register(definition({ ...base, name: "file.list", purpose: "List files and hidden entries at a relative, parent, home, or absolute directory path. Omit path for the active workspace root. Continue with the returned offset when truncated.", inputSchema: z.object({ path: filePath.default("."), recursive: z.boolean().default(false), maxDepth: z.number().int().min(0).max(20).default(2), maxEntries: z.number().int().min(1).max(MAX_LIST_ENTRIES).default(500), offset: z.number().int().min(0).max(1e6).default(0) }), sideEffect: "read", workspaceBoundary: "required", timeoutMs: 1e4, audit: { category: "filesystem", recordsAffectedPaths: false, recordsExitCode: false, externalDataTransfer: false }, networkAccess: false, describeTarget: (input) => input.path ?? ".", describeEffect: () => "Read a bounded directory listing, beginning at the workspace root by default." }));
+  registry.register(definition({ ...base, name: "file.read", purpose: "Read a bounded range of any accessible text file, including hidden and absolute paths. Use file.readBinary for binary content.", inputSchema: z.object({ path: filePath, startLine: z.number().int().min(1).optional(), endLine: z.number().int().min(1).optional(), offset: z.number().int().min(0).max(MAX_RANGED_TEXT_BYTES).optional(), maxCharacters: z.number().int().min(1).max(2e5).default(12e3) }).refine((input) => input.endLine === void 0 || input.startLine === void 0 || input.endLine >= input.startLine, "endLine must not precede startLine.").refine((input) => input.offset === void 0 || input.startLine === void 0 && input.endLine === void 0, "offset cannot be combined with line ranges."), sideEffect: "read", workspaceBoundary: "required", timeoutMs: 1e4, audit: { category: "filesystem", recordsAffectedPaths: false, recordsExitCode: false, externalDataTransfer: false }, networkAccess: false, describeTarget: (input) => input.path, describeEffect: () => "Read bounded text without changing the workspace." }));
+  registry.register(definition({ ...base, name: "file.read.binary", purpose: "Read bounded binary content at any accessible path as base64 together with file metadata.", inputSchema: z.object({ path: filePath, maxBytes: z.number().int().min(1).max(25e6).default(2e6) }), sideEffect: "read", workspaceBoundary: "required", timeoutMs: 2e4, audit: { category: "filesystem", recordsAffectedPaths: false, recordsExitCode: false, externalDataTransfer: false }, networkAccess: false, describeTarget: (input) => input.path, describeEffect: () => "Read binary bytes as bounded base64 without changing the workspace." }));
+  registry.register(definition({ ...base, name: "file.search", purpose: "Search accessible text files, including hidden files and paths outside the active workspace. When truncated, continue using the returned offset.", inputSchema: z.object({ query: z.string().min(1).max(500), path: filePath.default("."), caseSensitive: z.boolean().default(false), maxResults: z.number().int().min(1).max(MAX_SEARCH_RESULTS).default(50), offset: z.number().int().min(0).max(1e5).default(0) }), sideEffect: "read", workspaceBoundary: "required", timeoutMs: 2e4, audit: { category: "filesystem", recordsAffectedPaths: false, recordsExitCode: false, externalDataTransfer: false }, networkAccess: false, describeTarget: (input) => input.path ?? ".", describeEffect: (input) => `Search workspace text for ${JSON.stringify(input.query)}.` }));
+  registry.register(definition({ ...base, name: "file.create", purpose: "Create a file at any accessible path.", inputSchema: z.object({ path: filePath, content: z.string().max(MAX_TEXT_BYTES), reason }), sideEffect: "workspace-write", workspaceBoundary: "required", timeoutMs: 1e4, audit: { category: "filesystem", recordsAffectedPaths: true, recordsExitCode: false, externalDataTransfer: false }, networkAccess: false, describeTarget: (input) => input.path, describeEffect: () => "Create a new file atomically." }));
+  registry.register(definition({ ...base, name: "file.write", purpose: "Replace an accessible text file after showing a diff.", inputSchema: z.object({ path: filePath, content: z.string().max(MAX_TEXT_BYTES), reason }), sideEffect: "workspace-write", workspaceBoundary: "required", timeoutMs: 1e4, audit: { category: "filesystem", recordsAffectedPaths: true, recordsExitCode: false, externalDataTransfer: false }, networkAccess: false, describeTarget: (input) => input.path, describeEffect: () => "Atomically write the diff with a rollback backup." }));
+  registry.register(definition({ ...base, name: "file.patch", purpose: "Apply a targeted text replacement to an accessible file.", inputSchema: z.object({ path: filePath, expected: z.string().min(1).max(MAX_TEXT_BYTES), replacement: z.string().max(MAX_TEXT_BYTES), replaceAll: z.boolean().default(false), reason }), sideEffect: "workspace-write", workspaceBoundary: "required", timeoutMs: 1e4, audit: { category: "filesystem", recordsAffectedPaths: true, recordsExitCode: false, externalDataTransfer: false }, networkAccess: false, describeTarget: (input) => input.path, describeEffect: () => "Apply the displayed targeted patch atomically." }));
+  for (const name of ["file.rename", "file.move"]) registry.register(definition({ ...base, name, purpose: "Move an accessible path without overwriting.", inputSchema: z.object({ from: filePath, to: filePath, reason }), sideEffect: "workspace-write", workspaceBoundary: "required", timeoutMs: 1e4, audit: { category: "filesystem", recordsAffectedPaths: true, recordsExitCode: false, externalDataTransfer: false }, networkAccess: false, describeTarget: (input) => `${input.from} → ${input.to}`, describeEffect: () => "Move the path without overwriting the destination." }));
+  registry.register(definition({ ...base, name: "directory.create", purpose: "Create a directory at any accessible path.", inputSchema: z.object({ path: filePath, reason }), sideEffect: "workspace-write", workspaceBoundary: "required", timeoutMs: 1e4, audit: { category: "filesystem", recordsAffectedPaths: true, recordsExitCode: false, externalDataTransfer: false }, networkAccess: false, describeTarget: (input) => input.path, describeEffect: () => "Create a directory at the requested path." }));
+  registry.register(definition({ ...base, name: "file.delete", purpose: "Delete an accessible path after creating a rollback backup.", inputSchema: z.object({ path: filePath, reason }), sideEffect: "destructive", workspaceBoundary: "required", timeoutMs: 2e4, audit: { category: "filesystem", recordsAffectedPaths: true, recordsExitCode: false, externalDataTransfer: false }, networkAccess: false, describeTarget: (input) => input.path, describeEffect: () => "Back up then delete the selected source path." }));
   registry.register(definition({ ...base, name: "terminal.read", purpose: "Read bounded recent output from an existing user terminal session.", inputSchema: z.object({ sessionId: z.string().uuid().optional(), maxCharacters: z.number().int().min(100).max(2e4).default(4e3) }), sideEffect: "read", workspaceBoundary: "required", timeoutMs: 5e3, audit: { category: "shell", recordsAffectedPaths: false, recordsExitCode: true, externalDataTransfer: false }, networkAccess: false, describeTarget: (input) => input.sessionId ?? "all terminal sessions", describeEffect: () => "Read bounded, redacted recent terminal evidence without changing the session." }));
   const gitRead = (name, schema, effect) => registry.register(definition({ ...base, name, purpose: effect, inputSchema: schema, sideEffect: "read", workspaceBoundary: "required", timeoutMs: 2e4, audit: { category: "git", recordsAffectedPaths: false, recordsExitCode: false, externalDataTransfer: false }, networkAccess: false, describeTarget: () => "active Git workspace", describeEffect: () => effect }));
   gitRead("git.status", z.object({}), "Inspect current branch and working tree status.");
@@ -7542,7 +7601,7 @@ function createToolRegistry() {
   for (const name of ["git.stage", "git.unstage"]) registry.register(definition({ ...base, name, purpose: `${name === "git.stage" ? "Stage" : "Unstage"} selected Git paths.`, inputSchema: z.object({ files: z.array(relativePath).min(1).max(200), reason }), sideEffect: "workspace-write", workspaceBoundary: "required", timeoutMs: 2e4, audit: { category: "git", recordsAffectedPaths: true, recordsExitCode: false, externalDataTransfer: false }, networkAccess: false, describeTarget: (input) => input.files.join(", "), describeEffect: () => `${name === "git.stage" ? "Stage" : "Unstage"} only the listed paths.` }));
   registry.register(definition({ ...base, name: "git.commit", purpose: "Commit the exact staged Git paths.", inputSchema: z.object({ message: z.string().min(1).max(5e3), reason }), sideEffect: "repository-write", workspaceBoundary: "required", timeoutMs: 6e4, audit: { category: "git", recordsAffectedPaths: true, recordsExitCode: false, externalDataTransfer: false }, networkAccess: false, describeTarget: () => "current branch and staged files", describeEffect: (input) => `Create a commit with message ${JSON.stringify(input.message)}.` }));
   for (const name of ["git.pull", "git.push"]) registry.register(definition({ ...base, name, purpose: `${name === "git.pull" ? "Pull from" : "Push to"} the configured remote.`, inputSchema: z.object({ reason }), sideEffect: "write-network", workspaceBoundary: "required", timeoutMs: 12e4, audit: { category: "git", recordsAffectedPaths: true, recordsExitCode: false, externalDataTransfer: true }, networkAccess: true, describeTarget: () => "origin and current branch", describeEffect: () => `${name === "git.pull" ? "Receive remote changes" : "Send local commits"} using protected Git credentials.` }));
-  registry.register(definition({ ...base, name: "shell.run", purpose: "Run one executable with a separate argument array. Use bash -lc for shell operators, pipes, redirects, globbing, or substitutions.", inputSchema: z.object({ command: z.string().min(1).max(4096).describe("Executable name only, such as hermes, sha256sum, or bash. Do not include arguments in this field."), args: z.array(z.string().max(32e3)).max(500).default([]).describe('Arguments as separate array entries. For shell syntax use ["-lc", "<script>"] with command "bash".'), workingDirectory: z.string().max(4096).optional().describe("Workspace-relative cwd. Omit to use the validated active workspace root."), timeoutMs: z.number().int().min(100).max(6e5).default(12e4), environment: z.record(z.string()).optional(), environmentAllowlist: z.array(z.string()).max(100).default([]), networkProfile: z.enum(["offline", "network", "package-manager", "git"]).default("offline"), reason, expectedOutcome: z.string().min(1).max(2e3) }), sideEffect: "process", workspaceBoundary: "required", timeoutMs: 6e5, audit: { category: "shell", recordsAffectedPaths: true, recordsExitCode: true, externalDataTransfer: false }, networkAccess: true, describeTarget: (input) => [input.command, ...input.args ?? []].map(quoteArgument).join(" "), describeEffect: (input) => `${input.expectedOutcome} Network profile: ${input.networkProfile}.` }));
+  registry.register(definition({ ...base, name: "shell.run", purpose: "Run one executable with a separate argument array. Use bash -lc for shell operators, pipes, redirects, globbing, or substitutions.", inputSchema: z.object({ command: z.string().min(1).max(4096).describe("Executable name only, such as hermes, sha256sum, or bash. Do not include arguments in this field."), args: z.array(z.string().max(32e3)).max(500).default([]).describe('Arguments as separate array entries. For shell syntax use ["-lc", "<script>"] with command "bash".'), workingDirectory: filePath.optional().describe("Absolute or relative cwd. Relative paths start at the active workspace root."), timeoutMs: z.number().int().min(100).max(6e5).default(12e4), environment: z.record(z.string()).optional(), environmentAllowlist: z.array(z.string()).max(100).default([]), networkProfile: z.enum(["offline", "network", "package-manager", "git"]).default("offline"), reason, expectedOutcome: z.string().min(1).max(2e3) }), sideEffect: "process", workspaceBoundary: "required", timeoutMs: 6e5, audit: { category: "shell", recordsAffectedPaths: true, recordsExitCode: true, externalDataTransfer: false }, networkAccess: true, describeTarget: (input) => [input.command, ...input.args ?? []].map(quoteArgument).join(" "), describeEffect: (input) => `${input.expectedOutcome} Network profile: ${input.networkProfile}.` }));
   registry.register(definition({ ...base, name: "web.search", purpose: "Search the public web when external research is enabled. Workspace content is never sent automatically.", inputSchema: z.object({ query: z.string().min(1).max(1e3), reason, projectDataSent: z.literal("None").default("None") }), sideEffect: "read-network", workspaceBoundary: "not-applicable", timeoutMs: 3e4, audit: { category: "web", recordsAffectedPaths: false, recordsExitCode: false, externalDataTransfer: true }, networkAccess: true, describeTarget: (input) => input.query, describeEffect: () => "Send the exact public query to an external search service and return cited results." }));
   registry.register(definition({ ...base, name: "web.fetch", purpose: "Retrieve a public HTTP(S) resource when external research is enabled. Workspace content is never sent automatically.", inputSchema: z.object({ url: z.string().url().max(8e3), reason, projectDataSent: z.literal("None").default("None") }), sideEffect: "read-network", workspaceBoundary: "not-applicable", timeoutMs: 3e4, audit: { category: "web", recordsAffectedPaths: false, recordsExitCode: false, externalDataTransfer: true }, networkAccess: true, describeTarget: (input) => input.url, describeEffect: () => "Retrieve bounded public web evidence without browser automation." }));
   registry.register(definition({ ...base, name: "browser.open", purpose: "Open a validated public HTTP(S) URL in the user-visible FORGE Browser.", inputSchema: z.object({ url: z.string().url().max(8e3), reason, projectDataSent: z.literal("None").default("None") }), sideEffect: "read-network", workspaceBoundary: "not-applicable", timeoutMs: 45e3, audit: { category: "web", recordsAffectedPaths: false, recordsExitCode: false, externalDataTransfer: true }, networkAccess: true, describeTarget: (input) => input.url, describeEffect: () => "Navigate the visible FORGE Browser to this public URL. The destination and any rendered content remain external data." }));
@@ -7574,14 +7633,14 @@ function createToolRegistry() {
   for (const name of ["task.resume", "task.pause", "task.cancel"]) registry.register(definition({ ...base, name, purpose: `${name.slice(5)} a workspace-owned task .`, inputSchema: z.object({ taskId: z.string().uuid(), reason, trackingOnly: z.boolean().default(true) }), sideEffect: "workspace-write", workspaceBoundary: "required", timeoutMs: 2e4, audit: { category: "memory", recordsAffectedPaths: false, recordsExitCode: false, externalDataTransfer: false }, networkAccess: false, describeTarget: (input) => input.taskId, describeEffect: () => `${name.slice(5)} task tracking without changing execution policy.` }));
   registry.register(definition({ ...base, name: "task.checkpoint", purpose: "Record a checkpoint for the active task step; FORGE supplies task and audit identities internally.", inputSchema: z.object({ name: z.string().min(1).max(300), summary: z.string().min(1).max(4e3), verified: z.boolean().default(false), evidence: z.unknown().optional(), reason }), sideEffect: "workspace-write", workspaceBoundary: "required", timeoutMs: 1e4, audit: { category: "memory", recordsAffectedPaths: false, recordsExitCode: false, externalDataTransfer: false }, networkAccess: false, describeTarget: () => "the active workspace task step", describeEffect: () => "Persist a structured checkpoint without executing another tool." }));
   registry.register(definition({ ...base, name: "task.handoff", purpose: "Generate a Markdown projection of the active workspace task.", inputSchema: z.object({ reason }), sideEffect: "workspace-write", workspaceBoundary: "required", timeoutMs: 1e4, audit: { category: "memory", recordsAffectedPaths: true, recordsExitCode: false, externalDataTransfer: false }, networkAccess: false, describeTarget: () => ".forge/handoffs for the active task", describeEffect: () => "Atomically write or update a human-readable task handoff." }));
-  registry.register(definition({ ...base, name: "task.process.start", purpose: "Start one task step as a detached workspace-owned process with file-backed output.", inputSchema: z.object({ command: z.string().min(1).max(4096).describe("Executable name only; put every argument in args."), args: z.array(z.string().max(32e3)).max(500).default([]).describe('Arguments as separate array entries; use bash with ["-lc", "<script>"] for shell syntax.'), workingDirectory: z.string().max(4096).optional().describe("Workspace-relative cwd. Omit to use the validated active workspace root."), timeoutMs: z.number().int().min(100).max(864e5).default(6e5), environment: z.record(z.string()).optional(), environmentAllowlist: z.array(z.string()).max(100).default([]), networkProfile: z.enum(["offline", "network", "package-manager", "git"]).default("offline"), reason, expectedOutcome: z.string().min(1).max(2e3) }), sideEffect: "process", workspaceBoundary: "required", timeoutMs: 3e4, audit: { category: "shell", recordsAffectedPaths: true, recordsExitCode: true, externalDataTransfer: false }, networkAccess: true, describeTarget: (input) => [input.command, ...input.args ?? []].map(quoteArgument).join(" "), describeEffect: (input) => `${input.expectedOutcome} Output will be stored under .forge/task-output and execution may outlive the current conversation. Network profile: ${input.networkProfile}.` }));
+  registry.register(definition({ ...base, name: "task.process.start", purpose: "Start one task step as a detached workspace-owned process with file-backed output.", inputSchema: z.object({ command: z.string().min(1).max(4096).describe("Executable name only; put every argument in args."), args: z.array(z.string().max(32e3)).max(500).default([]).describe('Arguments as separate array entries; use bash with ["-lc", "<script>"] for shell syntax.'), workingDirectory: filePath.optional().describe("Absolute or relative cwd. Relative paths start at the active workspace root."), timeoutMs: z.number().int().min(100).max(864e5).default(6e5), environment: z.record(z.string()).optional(), environmentAllowlist: z.array(z.string()).max(100).default([]), networkProfile: z.enum(["offline", "network", "package-manager", "git"]).default("offline"), reason, expectedOutcome: z.string().min(1).max(2e3) }), sideEffect: "process", workspaceBoundary: "required", timeoutMs: 3e4, audit: { category: "shell", recordsAffectedPaths: true, recordsExitCode: true, externalDataTransfer: false }, networkAccess: true, describeTarget: (input) => [input.command, ...input.args ?? []].map(quoteArgument).join(" "), describeEffect: (input) => `${input.expectedOutcome} Output will be stored under .forge/task-output and execution may outlive the current conversation. Network profile: ${input.networkProfile}.` }));
+  registry.register(definition({ ...base, name: "task.redirect", purpose: "Queue a natural-language instruction for the active task at its next safe continuation boundary.", inputSchema: z.object({ taskId: z.string().uuid(), instruction: z.string().min(1).max(4e3), reason }), sideEffect: "workspace-write", workspaceBoundary: "required", timeoutMs: 1e4, audit: { category: "memory", recordsAffectedPaths: false, recordsExitCode: false, externalDataTransfer: false }, networkAccess: false, describeTarget: (input) => `task ${input.taskId}`, describeEffect: () => "Persist a redirect instruction in task history until the running agent acknowledges delivery." }));
   return registry;
 }
 function quoteArgument(value) {
   return /^[A-Za-z0-9_./:=+-]+$/.test(value) ? value : `'${value.replaceAll("'", "'\\''")}'`;
 }
 const SHELL_TOOL_NAMES = /* @__PURE__ */ new Set(["shell.run", "task.process.start"]);
-const EXECUTABLE_ARGUMENT_ERROR = 'Executable and arguments must be separate: set command to the executable only and put each argument in args (for example, command: "hermes", args: ["acp", "--help"]). Use command: "bash", args: ["-lc", "<script>"] for shell operators, pipes, redirects, globbing, or substitutions.';
 function normalizeCommandLine(commandLine) {
   const script = commandLine.trim();
   if (!script) throw new ToolValidationError("MALFORMED_ARGUMENTS", "A non-empty executable or command line is required.");
@@ -7654,23 +7713,57 @@ function normalizeCommandLine(commandLine) {
   finishToken();
   if (!args.length) throw new ToolValidationError("MALFORMED_ARGUMENTS", "A non-empty executable is required.");
   if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(args[0])) return { command: "bash", args: ["-lc", script] };
+  if (["cd", "source", "export", "alias", "unalias", "set", "unset", "ulimit"].includes(args[0])) return { command: "bash", args: ["-lc", script] };
   return { command: args[0], args: args.slice(1) };
 }
 function normalizeShellToolCall(call) {
   if (!SHELL_TOOL_NAMES.has(call.name)) return call;
-  if (Array.isArray(call.arguments)) throw new ToolValidationError("MALFORMED_ARGUMENTS", `${EXECUTABLE_ARGUMENT_ERROR} Received a command array instead of the shell tool object.`);
+  if (typeof call.arguments === "string") return normalizeShellToolCall({ ...call, arguments: { command: call.arguments } });
+  if (Array.isArray(call.arguments)) {
+    if (!call.arguments.length || !call.arguments.every((argument) => typeof argument === "string")) throw new ToolValidationError("MALFORMED_ARGUMENTS", "Shell command arrays must contain non-empty string arguments.");
+    return normalizeShellToolCall({ ...call, arguments: { command: call.arguments[0], args: call.arguments.slice(1) } });
+  }
   if (!call.arguments || typeof call.arguments !== "object") return call;
   const argumentsValue = call.arguments;
-  if (Array.isArray(argumentsValue.command)) throw new ToolValidationError("MALFORMED_ARGUMENTS", `${EXECUTABLE_ARGUMENT_ERROR} The command field must be a string, not an array.`);
+  if (Array.isArray(argumentsValue.command)) {
+    if (!argumentsValue.command.length || !argumentsValue.command.every((argument) => typeof argument === "string")) throw new ToolValidationError("MALFORMED_ARGUMENTS", "Shell command arrays must contain non-empty string arguments.");
+    return normalizeShellToolCall({ ...call, arguments: { ...argumentsValue, command: argumentsValue.command[0], args: [...argumentsValue.command.slice(1), ...Array.isArray(argumentsValue.args) ? argumentsValue.args : []] } });
+  }
   if (typeof argumentsValue.command !== "string") return call;
   const suppliedArgs = argumentsValue.args;
+  if (typeof suppliedArgs === "string") return normalizeShellToolCall({ ...call, arguments: { ...argumentsValue, command: `${argumentsValue.command} ${suppliedArgs}`, args: [] } });
   if (suppliedArgs !== void 0 && !Array.isArray(suppliedArgs)) return call;
   if (Array.isArray(suppliedArgs) && suppliedArgs.length > 0) {
-    if (/\s/.test(argumentsValue.command)) throw new ToolValidationError("MALFORMED_ARGUMENTS", EXECUTABLE_ARGUMENT_ERROR);
+    if (/\s/.test(argumentsValue.command)) {
+      const normalized2 = normalizeCommandLine(argumentsValue.command);
+      return { ...call, arguments: { ...argumentsValue, command: normalized2.command, args: [...normalized2.args, ...suppliedArgs] } };
+    }
     return call;
   }
   const normalized = normalizeCommandLine(argumentsValue.command);
   return { ...call, arguments: { ...argumentsValue, ...normalized } };
+}
+function normalizeProviderToolCall(call, userRequest = "") {
+  const shellNormalized = normalizeShellToolCall(call);
+  if (!shellNormalized.arguments || typeof shellNormalized.arguments !== "object" || Array.isArray(shellNormalized.arguments)) return shellNormalized;
+  const input = { ...shellNormalized.arguments };
+  if (["file.list", "file.search"].includes(shellNormalized.name) && input.path === "") input.path = ".";
+  if (shellNormalized.name === "file.read" && input.offset !== void 0 && (input.startLine !== void 0 || input.endLine !== void 0)) {
+    if (/\b(lines?|line numbers?|from line|through line)\b/i.test(userRequest)) delete input.offset;
+    else {
+      delete input.startLine;
+      delete input.endLine;
+    }
+  }
+  return { ...shellNormalized, arguments: input };
+}
+function inferredNetworkProfile(command, args) {
+  const executable = path__default.basename(command).toLowerCase();
+  const action = args.find((argument) => !argument.startsWith("-"))?.toLowerCase();
+  if (["curl", "wget", "ssh", "scp"].includes(executable)) return "network";
+  if (["npm", "npx", "pnpm", "yarn", "bun"].includes(executable) && ["install", "ci", "add", "update", "publish", "dlx", "create"].includes(action ?? "")) return "package-manager";
+  if (executable === "git" && ["clone", "fetch", "pull", "push", "ls-remote"].includes(action ?? "")) return "git";
+  return "offline";
 }
 function sanitizeToolData(value) {
   if (Array.isArray(value)) return value.map(sanitizeToolData);
@@ -7726,7 +7819,14 @@ function inferExecutionReason(definition2, context) {
 function enrichRuntimeArguments(argumentsValue, reasonValue, context, toolName) {
   if (!argumentsValue || typeof argumentsValue !== "object" || Array.isArray(argumentsValue)) return argumentsValue;
   const { reason: _providerReason, taskContext: _providerTaskContext, originatingConversationId: _providerConversationId, auditId: _providerAuditId, stepId: _providerStepId, ...semanticArguments } = argumentsValue;
-  return { ...semanticArguments, reason: reasonValue, ...toolName === "task.create" ? { originatingConversationId: context.conversationId } : {} };
+  const inferredProfile = SHELL_TOOL_NAMES.has(toolName) && typeof semanticArguments.command === "string" ? inferredNetworkProfile(semanticArguments.command, Array.isArray(semanticArguments.args) ? semanticArguments.args : []) : "offline";
+  const networkProfile = inferredProfile === "offline" ? semanticArguments.networkProfile : inferredProfile;
+  const configuredTimeout = toolName === "task.process.start" ? context.backgroundTaskTimeoutMs : context.processTimeoutMs;
+  const standardTimeout = toolName === "task.process.start" ? 6e5 : 12e4;
+  const timeoutLimit = context.processMode === "full-local-compute" ? configuredTimeout : Math.min(configuredTimeout ?? standardTimeout, standardTimeout);
+  const suppliedTimeout = typeof semanticArguments.timeoutMs === "number" ? semanticArguments.timeoutMs : timeoutLimit;
+  const cappedTimeout = typeof timeoutLimit === "number" && typeof suppliedTimeout === "number" ? Math.min(suppliedTimeout, timeoutLimit) : void 0;
+  return { ...semanticArguments, ...SHELL_TOOL_NAMES.has(toolName) && cappedTimeout !== void 0 ? { timeoutMs: cappedTimeout } : {}, reason: reasonValue, ...SHELL_TOOL_NAMES.has(toolName) && !semanticArguments.expectedOutcome ? { expectedOutcome: reasonValue } : {}, ...SHELL_TOOL_NAMES.has(toolName) && networkProfile ? { networkProfile } : {}, ...toolName === "task.create" ? { originatingConversationId: context.conversationId } : {} };
 }
 class ToolRouter {
   constructor(dependencies) {
@@ -7739,11 +7839,20 @@ class ToolRouter {
   controllers = /* @__PURE__ */ new Map();
   executors = /* @__PURE__ */ new Map();
   workspaceRoots = /* @__PURE__ */ new Map();
+  requestPathPolicies = /* @__PURE__ */ new Map();
   definitions() {
     return this.registry.list();
   }
-  providerDefinitions() {
-    return this.registry.list().filter((entry) => this.availability(entry.name).available).map((entry) => ({ name: entry.name, description: entry.purpose, parameters: modelVisibleToolSchema(zodToJsonSchema(entry.inputSchema, { target: "openApi3" })), sideEffects: entry.sideEffect, networkAccess: entry.networkAccess, cancellation: entry.cancellable, resultSemantics: "Returns a structured, bounded result with success, affected paths, warnings, and recovery metadata when applicable." }));
+  capabilityCatalog(executionMode = "controlled") {
+    return this.registry.list().map((entry) => {
+      const availability = this.availability(entry.name);
+      const modeAllows = executionMode !== "disabled" && (executionMode !== "controlled" || ["read", "read-network"].includes(entry.sideEffect));
+      return { name: entry.name, purpose: entry.purpose, category: entry.audit.category, sideEffect: entry.sideEffect, available: availability.available, unavailableReason: availability.reason, registered: true, executorPresent: this.executors.has(entry.name), providerVisible: modeAllows && availability.available, cancellable: entry.cancellable, networkAccess: entry.networkAccess, inputSchema: modelVisibleToolSchema(zodToJsonSchema(entry.inputSchema, { target: "openApi3" })) };
+    });
+  }
+  providerDefinitions(executionMode = "controlled") {
+    if (executionMode === "disabled") return [];
+    return this.registry.list().filter((entry) => this.availability(entry.name).available && (executionMode !== "controlled" || ["read", "read-network"].includes(entry.sideEffect))).map((entry) => ({ name: entry.name, description: entry.purpose, parameters: modelVisibleToolSchema(zodToJsonSchema(entry.inputSchema, { target: "openApi3" })), sideEffects: entry.sideEffect, networkAccess: entry.networkAccess, cancellation: entry.cancellable, resultSemantics: "Returns a structured, bounded result with success, affected paths, warnings, and recovery metadata when applicable." }));
   }
   listRequests(workspaceId) {
     return [...this.requests.values()].filter((request) => !workspaceId || request.workspaceId === workspaceId).sort((a, b) => b.requestedAt - a.requestedAt).map((request) => ({ ...request, input: sanitizeToolData(request.input) }));
@@ -7757,7 +7866,7 @@ class ToolRouter {
     const executionReason = definitionForContext ? inferExecutionReason(definitionForContext, context) : `Request ${call.name}`;
     let parsed;
     try {
-      const normalizedCall = normalizeShellToolCall(call);
+      const normalizedCall = context.autoRepairToolArguments === false ? call : normalizeProviderToolCall(call, context.userRequest);
       const runtimeCall = { ...normalizedCall, arguments: enrichRuntimeArguments(normalizedCall.arguments, executionReason, context, normalizedCall.name) };
       parsed = this.registry.parse(runtimeCall);
     } catch (error) {
@@ -7765,6 +7874,12 @@ class ToolRouter {
       throw error;
     }
     const { definition: definition2, input } = parsed;
+    const policyFailure = this.policyFailure(definition2, input, context);
+    if (policyFailure) {
+      const error = new ToolValidationError("POLICY_FAILURE", policyFailure);
+      await this.auditValidationFailure(call, context, error);
+      throw error;
+    }
     const availability = this.availability(definition2.name);
     if (!availability.available) {
       const error = new ToolValidationError("UNKNOWN_TOOL", `${definition2.name} is not available: ${availability.reason ?? "a required FORGE capability is unavailable."}`);
@@ -7774,7 +7889,8 @@ class ToolRouter {
     this.workspaceRoots.set(context.workspaceId, context.workspaceRoot);
     const now = Date.now();
     const requestId = call.id || randomUUID();
-    const prediction = await this.predict(definition2.name, input, context.workspaceRoot);
+    const pathPolicy = { workspaceRoot: context.workspaceRoot, scope: context.filesystemScope ?? "workspace", repositoryRoot: context.repositoryRoot, projectTreeRoot: context.projectTreeRoot };
+    const prediction = await this.predict(definition2.name, input, pathPolicy).catch(() => ({ paths: [] }));
     const request = {
       id: requestId,
       workspaceId: context.workspaceId,
@@ -7796,6 +7912,7 @@ class ToolRouter {
       updatedAt: now
     };
     this.requests.set(request.id, request);
+    this.requestPathPolicies.set(request.id, pathPolicy);
     const result = await this.execute(request.id, context);
     return { request: { ...request }, result };
   }
@@ -7810,8 +7927,20 @@ class ToolRouter {
     }
     if (request.state !== "running") return false;
     this.controllers.get(requestId)?.abort();
-    if (request.toolName === "shell.run") this.dependencies.shell.cancel(requestId);
+    if (SHELL_TOOL_NAMES.has(request.toolName)) this.dependencies.shell.cancel(requestId);
     return true;
+  }
+  async cancelAll(workspaceId) {
+    const active = [...this.requests.values()].filter((request) => request.workspaceId === workspaceId && ["requested", "running"].includes(request.state));
+    let cancelled = 0;
+    for (const request of active) if (await this.cancel(request.id, { workspaceId })) cancelled += 1;
+    return cancelled;
+  }
+  async cancelTask(taskId) {
+    const active = [...this.requests.values()].filter((request) => request.executionContext.taskId === taskId && ["requested", "running"].includes(request.state));
+    let cancelled = 0;
+    for (const request of active) if (await this.cancel(request.id, { workspaceId: request.workspaceId })) cancelled += 1;
+    return cancelled;
   }
   async execute(requestId, _context) {
     const request = this.required(requestId);
@@ -7834,13 +7963,16 @@ class ToolRouter {
     } catch (error) {
       const durationMs = Date.now() - started;
       const cancelled = controller.signal.aborted;
-      const result = { requestId: request.id, toolName: request.toolName, success: false, affectedPaths: [], warnings: [], error: { code: cancelled ? "CANCELLED" : "EXECUTION_FAILED", message: error instanceof Error ? error.message : String(error) }, durationMs, cancelled };
+      const message = error instanceof Error ? error.message : String(error);
+      const errorCode2 = cancelled ? "CANCELLED" : message.startsWith("SCOPE_FAILURE:") ? "SCOPE_FAILURE" : "EXECUTION_FAILED";
+      const result = { requestId: request.id, toolName: request.toolName, success: false, affectedPaths: [], warnings: [], error: { code: errorCode2, message }, durationMs, cancelled };
       request.state = cancelled ? "cancelled" : "failed";
       request.updatedAt = Date.now();
       await this.dependencies.audit.appendAction(this.record(request, cancelled ? "cancelled" : "failed", false, durationMs, result.error.message, []));
       return result;
     } finally {
       this.controllers.delete(request.id);
+      this.requestPathPolicies.delete(request.id);
     }
   }
   record(request, executionState, success, executionDurationMs, resultSummary, affectedPaths, exitCode, rollback, output) {
@@ -7866,18 +7998,37 @@ class ToolRouter {
     if (name.startsWith("web.") && !this.dependencies.web.isEnabled()) return { available: false, reason: "external web research is disabled in Settings" };
     return { available: true };
   }
-  async predict(name, input, root) {
+  policyFailure(definition2, input, context) {
+    if (context.executionMode === "disabled") return "POLICY_FAILURE: Tool execution is disabled in Settings.";
+    if (context.executionMode === "controlled" && !["read", "read-network"].includes(definition2.sideEffect)) return "POLICY_FAILURE: Controlled mode permits read-only capabilities. Select Allow All in Settings to authorize mutations, processes, or network writes.";
+    const network = context.networkAccess;
+    if (definition2.sideEffect === "read-network" || definition2.sideEffect === "write-network") {
+      if (definition2.name.startsWith("github.") || ["git.pull", "git.push"].includes(definition2.name)) {
+        if (network && !network.git) return "POLICY_FAILURE: Git network access is disabled in Settings.";
+      } else if (network && !network.web) return "POLICY_FAILURE: Web network access is disabled in Settings.";
+    }
+    if (["shell.run", "task.process.start"].includes(definition2.name)) {
+      if (definition2.name === "task.process.start" && context.backgroundTasksEnabled === false) return "POLICY_FAILURE: Background task processes are disabled in Settings.";
+      const inferred = typeof input.command === "string" ? inferredNetworkProfile(input.command, Array.isArray(input.args) ? input.args : []) : "offline";
+      const profile = inferred === "offline" ? input.networkProfile ?? "offline" : inferred;
+      if (network && profile === "git" && !network.git) return "POLICY_FAILURE: Git network access is disabled in Settings.";
+      if (network && profile === "package-manager" && !network.packageManager) return "POLICY_FAILURE: Package-manager network access is disabled in Settings.";
+      if (network && profile === "network" && !network.general) return "POLICY_FAILURE: General network access is disabled in Settings.";
+    }
+    return void 0;
+  }
+  async predict(name, input, policy) {
     if (name === "file.create") return { paths: [input.path], diff: unifiedDiff(input.path, "", input.content) };
     if (name === "file.write") {
-      const absolute = await resolveContainedPath(root, input.path);
+      const absolute = await resolveScopedPath(policy, input.path);
       const existing = await readText(absolute);
-      return { paths: [input.path], diff: unifiedDiff(input.path, existing.content, input.content) };
+      return { paths: [absolute], diff: unifiedDiff(absolute, existing.content, input.content), target: absolute };
     }
     if (name === "file.patch") {
-      const absolute = await resolveContainedPath(root, input.path);
+      const absolute = await resolveScopedPath(policy, input.path);
       const existing = await readText(absolute);
       const after = applyReplacement(existing.content, input.expected, input.replacement, input.replaceAll);
-      return { paths: [input.path], diff: unifiedDiff(input.path, existing.content, after) };
+      return { paths: [absolute], diff: unifiedDiff(absolute, existing.content, after), target: absolute };
     }
     if (["file.rename", "file.move"].includes(name)) return { paths: [input.from, input.to] };
     if (name === "directory.create" || name === "file.delete") return { paths: [input.path] };
@@ -7898,31 +8049,43 @@ class ToolRouter {
   }
   installExecutors() {
     const ok = (output, affectedPaths = [], extra = {}) => ({ success: true, output: { success: true, ...output }, affectedPaths, warnings: [], ...extra });
+    this.executors.set("task.redirect", async (input) => {
+      if (!this.dependencies.tasks) throw new Error("Persistent task runtime is unavailable.");
+      const taskService = this.dependencies.tasks;
+      return ok({ task: await taskService.redirect(input.taskId, input.instruction) });
+    });
     const missing = (requestedPath) => ({ missing: true, requestedPath, recovery: { action: "restart-at-workspace-root", path: ".", nearestRequestedParent: path__default.dirname(requestedPath) || ".", instruction: "List the workspace root, discover the real layout, and retry only with an observed path." } });
     this.executors.set("file.list", async (input, request) => {
       const requestedPath = input.path === "." ? "." : input.path;
       const root = await promises.realpath(this.root(request));
-      const absolute = await resolveContainedPath(root, requestedPath, true);
+      const absolute = await this.resolvePath(request, requestedPath, true);
       if (!await pathExists(absolute)) return ok({ ...missing(requestedPath), entries: [], truncated: false });
       const entries = [];
+      const skipped = [];
+      const scanLimit = input.offset + input.maxEntries + 1;
       const visit2 = async (current, depth) => {
+        if (entries.length >= scanLimit) return;
         let directory;
         try {
           directory = await promises.readdir(current, { withFileTypes: true });
         } catch (error) {
-          if (skippableFileSystemError(error)) return;
+          if (skippableFileSystemError(error)) {
+            if (skipped.length < 100) skipped.push({ path: displayPath(root, current), error: String(error.code) });
+            return;
+          }
           throw error;
         }
         directory.sort((left, right) => left.name.localeCompare(right.name));
         for (const entry of directory) {
+          if (entries.length >= scanLimit) return;
           const child = path__default.join(current, entry.name);
-          if (skippedWorkspacePath(root, child)) continue;
           try {
             const stat = await promises.lstat(child);
-            entries.push({ path: path__default.relative(root, child), type: entry.isDirectory() ? "directory" : entry.isSymbolicLink() ? "symlink" : "file", size: stat.size });
+            entries.push({ path: displayPath(root, child), type: entry.isDirectory() ? "directory" : entry.isSymbolicLink() ? "symlink" : "file", size: stat.size });
             if (input.recursive && entry.isDirectory() && depth < input.maxDepth) await visit2(child, depth + 1);
           } catch (error) {
             if (!skippableFileSystemError(error)) throw error;
+            if (skipped.length < 100) skipped.push({ path: displayPath(root, child), error: String(error.code) });
           }
         }
       };
@@ -7930,10 +8093,10 @@ class ToolRouter {
       const page = entries.slice(input.offset, input.offset + input.maxEntries);
       const nextOffset = input.offset + page.length;
       const truncated = nextOffset < entries.length;
-      return ok({ entries: page, totalEntries: entries.length, truncated, continuation: truncated ? { offset: nextOffset, instruction: "Call file.list again with the same path, recursion, and depth plus this offset." } : void 0 });
+      return ok({ entries: page, totalEntries: truncated ? void 0 : entries.length, totalEntriesAtLeast: entries.length, skipped, truncated, continuation: truncated ? { offset: nextOffset, instruction: "Call file.list again with the same path, recursion, and depth plus this offset." } : void 0 });
     });
     this.executors.set("file.read", async (input, request) => {
-      const absolute = await resolveContainedPath(this.root(request), input.path, true);
+      const absolute = await this.resolvePath(request, input.path, true);
       if (!await pathExists(absolute)) return ok(missing(input.path));
       const stat = await promises.stat(absolute);
       if (!stat.isFile()) return ok({ path: input.path, unreadable: true, reason: "not-a-file", recovery: { action: "list-path", path: input.path, instruction: "Use file.list for directories, then call file.read with an observed file path." } });
@@ -7959,7 +8122,7 @@ class ToolRouter {
       return ok({ path: input.path, content: returned, encoding: data.encoding, totalCharacters: content.length, totalLines, returnedRange: { offset: startOffset, length: returned.length, startLine: lineAt(startOffset), endLine: lineAt(Math.max(startOffset, maxEnd - 1)) }, truncated, continuation: truncated ? { offset: maxEnd, instruction: "Call file.read again with this offset and the same maxCharacters." } : void 0 });
     });
     this.executors.set("file.read.binary", async (input, request) => {
-      const absolute = await resolveContainedPath(this.root(request), input.path);
+      const absolute = await this.resolvePath(request, input.path);
       const [buffer, stat] = await Promise.all([promises.readFile(absolute), promises.stat(absolute)]);
       if (!stat.isFile()) return ok({ path: input.path, unreadable: true, reason: "not-a-file" });
       if (buffer.byteLength > input.maxBytes) throw new Error(`Binary file exceeds the requested ${input.maxBytes.toLocaleString()} byte limit.`);
@@ -7968,24 +8131,27 @@ class ToolRouter {
     this.executors.set("file.search", async (input, request, signal) => {
       const requestedPath = input.path === "." ? "." : input.path;
       const root = await promises.realpath(this.root(request));
-      const absolute = await resolveContainedPath(root, requestedPath, true);
+      const absolute = await this.resolvePath(request, requestedPath, true);
       if (!await pathExists(absolute)) return ok({ ...missing(requestedPath), matches: [], truncated: false });
       const matches = [];
       let matchOffset = 0;
       const query = input.caseSensitive ? input.query : input.query.toLowerCase();
+      const skipped = [];
       const visit2 = async (current) => {
         if (signal.aborted || matches.length >= input.maxResults) return;
         let directory;
         try {
           directory = await promises.readdir(current, { withFileTypes: true });
         } catch (error) {
-          if (skippableFileSystemError(error)) return;
+          if (skippableFileSystemError(error)) {
+            if (skipped.length < 100) skipped.push({ path: displayPath(root, current), error: String(error.code) });
+            return;
+          }
           throw error;
         }
         for (const entry of directory) {
           if (signal.aborted || matches.length >= input.maxResults) return;
           const child = path__default.join(current, entry.name);
-          if (skippedWorkspacePath(root, child)) continue;
           if (entry.isDirectory()) await visit2(child);
           else if (entry.isFile()) {
             try {
@@ -7993,42 +8159,43 @@ class ToolRouter {
               for (const [index, line] of data.content.split(/\r?\n/).entries()) {
                 const haystack = input.caseSensitive ? line : line.toLowerCase();
                 if (haystack.includes(query)) {
-                  if (matchOffset >= input.offset) matches.push({ path: path__default.relative(root, child), line: index + 1, text: line.slice(0, 2e3) });
+                  if (matchOffset >= input.offset) matches.push({ path: displayPath(root, child), line: index + 1, text: line.slice(0, 2e3) });
                   matchOffset += 1;
                 }
                 if (matches.length >= input.maxResults) break;
               }
-            } catch {
+            } catch (error) {
+              if (skippableFileSystemError(error) && skipped.length < 100) skipped.push({ path: displayPath(root, child), error: String(error.code) });
             }
           }
         }
       };
       await visit2(absolute);
       const truncated = matches.length >= input.maxResults;
-      return ok({ matches, truncated, totalOrMore: input.offset + matches.length + (truncated ? 1 : 0), continuation: truncated ? { offset: input.offset + matches.length, instruction: "Call file.search again with the same query/path and this offset." } : void 0 });
+      return ok({ matches, skipped, truncated, totalOrMore: input.offset + matches.length + (truncated ? 1 : 0), continuation: truncated ? { offset: input.offset + matches.length, instruction: "Call file.search again with the same query/path and this offset." } : void 0 });
     });
     this.executors.set("file.create", async (input, request) => {
       this.assertNotDirty(input.path);
-      const absolute = await resolveContainedPath(this.root(request), input.path, true);
+      const absolute = await this.resolvePath(request, input.path, true);
       await promises.mkdir(path__default.dirname(absolute), { recursive: true });
       await promises.writeFile(absolute, input.content, { flag: "wx" });
-      return ok({ path: input.path }, [input.path], { diff: request.diff, rollback: { available: true, instructions: `Delete ${input.path} to undo this creation.` } });
+      return ok({ path: absolute }, [absolute], { diff: request.diff, rollback: { available: true, instructions: `Delete ${absolute} to undo this creation.` } });
     });
     for (const name of ["file.write", "file.patch"]) this.executors.set(name, async (input, request) => {
       this.assertNotDirty(input.path);
-      const absolute = await resolveContainedPath(this.root(request), input.path);
+      const absolute = await this.resolvePath(request, input.path);
       const original = await readText(absolute);
       const after = name === "file.write" ? input.content : applyReplacement(original.content, input.expected, input.replacement, input.replaceAll);
-      const backup = await backupPath(this.root(request), input.path);
+      const backup = await backupPath(this.root(request), absolute);
       await promises.copyFile(absolute, backup);
       await atomicWrite(absolute, after, original.encoding, original.mode);
-      return ok({ path: input.path }, [input.path], { diff: unifiedDiff(input.path, original.content, after), rollback: { available: true, backupPath: path__default.relative(this.root(request), backup).replaceAll("\\", "/"), instructions: `Restore the backup over ${input.path}.` } });
+      return ok({ path: absolute }, [absolute], { diff: unifiedDiff(absolute, original.content, after), rollback: { available: true, backupPath: path__default.relative(this.root(request), backup).replaceAll("\\", "/"), instructions: `Restore the backup over ${absolute}.` } });
     });
     for (const name of ["file.rename", "file.move"]) this.executors.set(name, async (input, request) => {
       this.assertNotDirty(input.from);
       this.assertNotDirty(input.to);
-      const source = await resolveContainedPath(this.root(request), input.from);
-      const destination = await resolveContainedPath(this.root(request), input.to, true);
+      const source = await this.resolvePath(request, input.from);
+      const destination = await this.resolvePath(request, input.to, true);
       await promises.access(destination).then(() => {
         throw new Error("Destination already exists.");
       }).catch((error) => {
@@ -8037,20 +8204,21 @@ class ToolRouter {
       });
       await promises.mkdir(path__default.dirname(destination), { recursive: true });
       await promises.rename(source, destination);
-      return ok({}, [input.from, input.to], { rollback: { available: true, instructions: `Move ${input.to} back to ${input.from}.` } });
+      return ok({}, [source, destination], { rollback: { available: true, instructions: `Move ${destination} back to ${source}.` } });
     });
     this.executors.set("directory.create", async (input, request) => {
-      const absolute = await resolveContainedPath(this.root(request), input.path, true);
+      const absolute = await this.resolvePath(request, input.path, true);
       await promises.mkdir(absolute, { recursive: false });
-      return ok({}, [input.path], { rollback: { available: true, instructions: `Remove the empty directory ${input.path}.` } });
+      return ok({}, [absolute], { rollback: { available: true, instructions: `Remove the empty directory ${absolute}.` } });
     });
     this.executors.set("file.delete", async (input, request) => {
       this.assertNotDirty(input.path);
-      const absolute = await resolveContainedPath(this.root(request), input.path);
-      const backup = await backupPath(this.root(request), input.path);
+      const absolute = await this.resolvePath(request, input.path);
+      if (inside(absolute, await promises.realpath(this.root(request)))) throw new Error("Deleting the active workspace or one of its parent directories would make the rollback backup recursive. Delete a narrower path.");
+      const backup = await backupPath(this.root(request), absolute);
       await promises.cp(absolute, backup, { recursive: true, errorOnExist: true });
       await promises.rm(absolute, { recursive: true, force: false });
-      return ok({}, [input.path], { rollback: { available: true, backupPath: path__default.relative(this.root(request), backup).replaceAll("\\", "/"), instructions: `Restore the backup to ${input.path}.` } });
+      return ok({}, [absolute], { rollback: { available: true, backupPath: path__default.relative(this.root(request), backup).replaceAll("\\", "/"), instructions: `Restore the backup to ${absolute}.` } });
     });
     this.executors.set("terminal.read", async (input) => {
       if (!this.dependencies.terminal) throw new Error("Terminal evidence is unavailable.");
@@ -8088,8 +8256,9 @@ class ToolRouter {
       return ok({ branch: status.branch });
     });
     this.executors.set("shell.run", async (input, request) => {
-      const output = await this.dependencies.shell.run(input, request.id);
-      return ok(output, [], { exitCode: output.exitCode, truncated: output.truncated, cancelled: output.cancelled });
+      const workingDirectory = await this.resolvePath(request, input.workingDirectory ?? ".", false);
+      const output = await this.dependencies.shell.run({ ...input, workingDirectory }, request.id, true);
+      return { success: output.exitCode === 0 && !output.timedOut && !output.cancelled, output: { success: output.exitCode === 0 && !output.timedOut && !output.cancelled, ...output }, affectedPaths: [], warnings: [], exitCode: output.exitCode, truncated: output.truncated, cancelled: output.cancelled, ...output.exitCode === 0 && !output.timedOut && !output.cancelled ? {} : { error: { code: output.timedOut ? "TIMEOUT" : output.cancelled ? "CANCELLED" : "NONZERO_EXIT", message: `Command exited with code ${output.exitCode ?? "unknown"}.` } } };
     });
     this.executors.set("web.search", async (input) => ok(await this.dependencies.web.search(input.query)));
     this.executors.set("web.fetch", async (input) => ok(await this.dependencies.web.fetch(input.url)));
@@ -8170,7 +8339,8 @@ class ToolRouter {
       if (!this.dependencies.tasks) throw new Error("Persistent task runtime is unavailable.");
       const { taskId, stepId } = request.executionContext;
       if (!taskId || !stepId) throw new Error("task.process.start requires an active persistent task step; FORGE supplies its IDs internally.");
-      const processInput = { command: input.command, args: input.args, workingDirectory: input.workingDirectory, timeoutMs: input.timeoutMs, environment: input.environment, environmentAllowlist: input.environmentAllowlist, networkProfile: input.networkProfile, reason: input.reason, expectedOutcome: input.expectedOutcome };
+      const workingDirectory = await this.resolvePath(request, input.workingDirectory ?? ".", false);
+      const processInput = { command: input.command, args: input.args, workingDirectory, timeoutMs: input.timeoutMs, environment: input.environment, environmentAllowlist: input.environmentAllowlist, networkProfile: input.networkProfile, reason: input.reason, expectedOutcome: input.expectedOutcome };
       const started = await this.dependencies.tasks.startBackground(taskId, stepId, processInput, request.id);
       return ok({ started }, started.process?.outputPath ? [started.process.outputPath] : []);
     });
@@ -8179,6 +8349,10 @@ class ToolRouter {
     const root = this.workspaceRoots.get(request.workspaceId);
     if (!root) throw new Error("Workspace root is unavailable for this request.");
     return root;
+  }
+  resolvePath(request, requestedPath, allowMissing = false) {
+    const policy = this.requestPathPolicies.get(request.id) ?? { workspaceRoot: this.root(request), scope: "workspace" };
+    return resolveScopedPath(policy, requestedPath, allowMissing);
   }
   assertNotDirty(relative) {
     if (this.dependencies.dirtyPaths().has(relative)) throw new Error(`The editor has unsaved content for ${relative}; save or discard it before tool execution.`);
@@ -8278,7 +8452,7 @@ function assertNetworkProfile(input) {
 }
 async function resolveWorkspacePath(workspaceRoot, requested) {
   const selected = requested?.trim() || ".";
-  if (path__default.isAbsolute(selected)) throw new Error("Absolute paths require a separate, explicitly approved policy.");
+  if (selected.includes("\0")) throw new Error("Working directory may not contain null bytes.");
   let root;
   try {
     root = await promises.realpath(workspaceRoot);
@@ -8286,7 +8460,8 @@ async function resolveWorkspacePath(workspaceRoot, requested) {
     if (error instanceof Error && "code" in error && error.code === "ENOENT") throw new Error(`Workspace root does not exist: ${workspaceRoot}`);
     throw error;
   }
-  const candidate = path__default.resolve(root, selected);
+  const expanded = selected === "~" ? os.homedir() : selected.startsWith(`~${path__default.sep}`) ? path__default.join(os.homedir(), selected.slice(2)) : selected;
+  const candidate = path__default.resolve(root, expanded);
   let resolved;
   try {
     resolved = await promises.realpath(candidate);
@@ -8294,9 +8469,22 @@ async function resolveWorkspacePath(workspaceRoot, requested) {
     if (error instanceof Error && "code" in error && error.code === "ENOENT") throw new Error(`cwd does not exist: ${selected}`);
     throw error;
   }
-  if (resolved !== root && !resolved.startsWith(`${root}${path__default.sep}`)) throw new Error("Working directory escapes the active workspace.");
   const stat = await promises.stat(resolved);
   if (!stat.isDirectory()) throw new Error("Working directory must be a directory.");
+  return resolved;
+}
+async function resolveAuthorizedWorkingDirectory(workspaceRoot, requested) {
+  const selected = requested?.trim() || workspaceRoot;
+  if (selected.includes("\0")) throw new Error("Working directory may not contain null bytes.");
+  const expanded = selected === "~" ? os.homedir() : selected.startsWith("~/") || selected.startsWith(`~${path__default.sep}`) ? path__default.join(os.homedir(), selected.slice(2)) : selected;
+  let resolved;
+  try {
+    resolved = await promises.realpath(path__default.resolve(workspaceRoot, expanded));
+  } catch (error) {
+    if (error instanceof Error && "code" in error && error.code === "ENOENT") throw new Error(`cwd does not exist: ${selected}`);
+    throw error;
+  }
+  if (!(await promises.stat(resolved)).isDirectory()) throw new Error("Working directory must be a directory.");
   return resolved;
 }
 function assertCanonicalExecutable(command, args) {
@@ -8357,12 +8545,12 @@ class ShellService {
     this.outputLimit = outputLimit;
   }
   running = /* @__PURE__ */ new Map();
-  async run(input, requestId = randomUUID()) {
+  async run(input, requestId = randomUUID(), allowAuthorizedExternalCwd = false) {
     const root = this.workspaceRoot();
     if (!root) throw new Error("Open a workspace before running a shell tool.");
     assertCanonicalExecutable(input.command, input.args);
     assertNetworkProfile(input);
-    const cwd = await resolveWorkspacePath(root, input.workingDirectory);
+    const cwd = allowAuthorizedExternalCwd ? await resolveAuthorizedWorkingDirectory(root, input.workingDirectory) : await resolveWorkspacePath(root, input.workingDirectory);
     const timeoutMs = Math.min(Math.max(input.timeoutMs, 100), 10 * 6e4);
     const environment = filteredEnvironment(input.environment, input.environmentAllowlist);
     return new Promise((resolve, reject) => {
@@ -8425,13 +8613,13 @@ class ShellService {
       });
     });
   }
-  async startBackground(input, outputPath, requestId = randomUUID()) {
+  async startBackground(input, outputPath, requestId = randomUUID(), allowAuthorizedExternalCwd = false) {
     const root = this.workspaceRoot();
     if (!root) throw new Error("Open a workspace before running a background shell task.");
     assertCanonicalExecutable(input.command, input.args);
     assertNetworkProfile(input);
     if (!outputPath || path__default.isAbsolute(outputPath) || outputPath.split(/[\\/]/).includes("..")) throw new Error("Background output path must be workspace-relative.");
-    const cwd = await resolveWorkspacePath(root, input.workingDirectory);
+    const cwd = allowAuthorizedExternalCwd ? await resolveAuthorizedWorkingDirectory(root, input.workingDirectory) : await resolveWorkspacePath(root, input.workingDirectory);
     const realRoot = await promises.realpath(root);
     const requestedOutput = path__default.resolve(root, outputPath);
     if (requestedOutput === path__default.resolve(root) || !requestedOutput.startsWith(`${path__default.resolve(root)}${path__default.sep}`)) throw new Error("Background output path escapes the active workspace.");
@@ -8500,13 +8688,12 @@ class TerminalService {
     const root = this.workspaceRoot();
     if (!root) throw new Error("Open a workspace before creating a terminal.");
     const cwd = await resolveWorkspacePath(root, requestedCwd);
-    const canonicalWorkspaceRoot = await promises.realpath(root);
     const id2 = requestedId ?? randomUUID();
     if (this.sessions.has(id2)) throw new Error("Terminal session already exists.");
     const shell2 = defaultTerminalShell();
     const terminal = pty.spawn(shell2, terminalSpawnArguments(), { name: "xterm-256color", cols: Math.max(20, columns), rows: Math.max(5, rows), cwd, env: terminalEnvironment(shell2) });
     const info = { id: id2, cwd, pid: terminal.pid, state: "running", exitCode: null, createdAt: Date.now(), title: path__default.basename(cwd), recentOutput: "" };
-    const session = { info, process: terminal, workspaceRoot: root, canonicalWorkspaceRoot };
+    const session = { info, process: terminal, workspaceRoot: root };
     this.sessions.set(id2, session);
     terminal.onData((data) => {
       if (this.sessions.get(id2)?.process !== terminal) return;
@@ -8539,11 +8726,10 @@ class TerminalService {
   }
   async restart(id2) {
     const current = this.required(id2);
-    const relative = path__default.relative(current.canonicalWorkspaceRoot, current.info.cwd) || ".";
     const { cols, rows } = current.process;
     this.sessions.delete(id2);
     if (current.info.state === "running") current.process.kill();
-    return this.create(relative, cols, rows, id2);
+    return this.create(current.info.cwd, cols, rows, id2);
   }
   remove(id2) {
     this.terminate(id2);
@@ -8857,21 +9043,21 @@ class ForgeLiveService {
       return;
     }
     try {
-      let filePath = candidate;
-      let stat = await promises.stat(filePath);
-      const resolvedCandidate = await promises.realpath(filePath);
+      let filePath2 = candidate;
+      let stat = await promises.stat(filePath2);
+      const resolvedCandidate = await promises.realpath(filePath2);
       if (resolvedCandidate !== this.realRoot && !resolvedCandidate.startsWith(`${this.realRoot}${path.sep}`)) {
         response.writeHead(403);
         response.end("Forbidden");
         return;
       }
       if (stat.isDirectory()) {
-        filePath = path.join(filePath, "index.html");
-        stat = await promises.stat(filePath);
+        filePath2 = path.join(filePath2, "index.html");
+        stat = await promises.stat(filePath2);
       }
       if (!stat.isFile()) throw new Error("not file");
-      const extension = path.extname(filePath).toLowerCase();
-      const body = await promises.readFile(filePath);
+      const extension = path.extname(filePath2).toLowerCase();
+      const body = await promises.readFile(filePath2);
       const output = extension === ".html" || extension === ".htm" ? injectReloadClient(body.toString("utf8")) : body;
       response.writeHead(200, { "Content-Type": mimeTypes[extension] ?? "application/octet-stream", "Content-Length": Buffer.byteLength(output) });
       response.end(output);
@@ -10172,13 +10358,45 @@ class TaskRuntime {
     if (task.status === "completed" || task.status === "cancelled") return task;
     return this.dependencies.storage.setPersistentTaskState(taskId, "paused", { summary: `Paused: ${reason2}`, eventType: "task.paused", interruptionReason: reason2, currentStepId: task.currentStepId, resumabilityState: "reconcile-required" });
   }
+  async redirect(taskId, instruction) {
+    const normalized = instruction.trim();
+    if (!normalized || normalized.length > 4e3) throw new Error("A redirect instruction between 1 and 4,000 characters is required.");
+    const task = await this.get(taskId);
+    if (["completed", "cancelled"].includes(task.status)) throw new Error("Completed or cancelled tasks cannot receive redirect instructions.");
+    await this.dependencies.storage.appendTaskEvent(taskId, { type: "task.redirected", summary: `Redirect instruction queued: ${normalized.slice(0, 240)}`, details: { instruction: normalized } });
+    return this.get(taskId);
+  }
+  async pendingRedirects(taskId) {
+    const task = await this.get(taskId);
+    const consumed = new Set(task.events.filter((event) => event.type === "task.redirect.consumed" && typeof event.details?.eventId === "string").map((event) => event.details.eventId));
+    return task.events.filter((event) => event.type === "task.redirected" && !consumed.has(event.id) && typeof event.details?.instruction === "string").map((event) => ({ eventId: event.id, instruction: event.details.instruction }));
+  }
+  async acknowledgeRedirects(taskId, eventIds) {
+    const available = new Set((await this.pendingRedirects(taskId)).map((entry) => entry.eventId));
+    for (const eventId of eventIds) if (available.has(eventId)) await this.dependencies.storage.appendTaskEvent(taskId, { type: "task.redirect.consumed", summary: "Queued redirect instruction was delivered to the active agent.", details: { eventId } });
+  }
   async cancel(taskId, reason2, trackingOnly) {
     if (!reason2.trim() || reason2.length > 4e3) throw new Error("A bounded cancellation reason is required.");
     const task = await this.get(taskId);
-    const activePids = [.../* @__PURE__ */ new Set([...task.processIds, ...task.steps.filter((step) => step.status === "running" && step.externalProcessId).map((step) => step.externalProcessId)])];
-    if (activePids.length && !trackingOnly) throw new Error(`Task cancellation will not silently kill active process IDs: ${activePids.join(", ")}. Cancel tracking only or terminate the exact process through a tool.`);
-    const summary = activePids.length ? `FORGE tracking cancelled; external process IDs may still be active: ${activePids.join(", ")}.` : `Task cancelled: ${reason2}`;
+    const activeSteps = task.steps.filter((step) => step.status === "running" && step.externalProcessId);
+    const activePids = [...new Set(activeSteps.map((step) => step.externalProcessId))];
+    if (activePids.length && !trackingOnly) {
+      for (const step of activeSteps) {
+        const requestId = step.auditReferences.at(-1);
+        if (!requestId || !this.dependencies.shell?.cancel?.(requestId)) throw new Error(`Task process ${step.externalProcessId} could not be cancelled through its tracked shell request ${requestId ?? "(missing)"}. Task state was not changed.`);
+      }
+    }
+    const summary = activePids.length && trackingOnly ? `FORGE tracking cancelled; external process IDs may still be active: ${activePids.join(", ")}.` : `Task cancelled: ${reason2}`;
     return this.dependencies.storage.setPersistentTaskState(taskId, "cancelled", { summary, eventType: "task.cancelled", interruptionReason: reason2, currentStepId: task.currentStepId, resumabilityState: "not-resumable", details: { trackingOnly, activePids } });
+  }
+  async stopAll() {
+    const active = (await this.list()).filter((task) => !["completed", "cancelled"].includes(task.status));
+    let cancelled = 0;
+    for (const task of active) {
+      await this.cancel(task.id, "Stop All was requested from FORGE.", false);
+      cancelled += 1;
+    }
+    return cancelled;
   }
   async retryStep(taskId, stepId) {
     const task = await this.get(taskId);
@@ -10231,7 +10449,7 @@ class TaskRuntime {
     const outputPath = path__default.join(".forge", "task-output", taskId, `${slug(step.name)}.log`);
     await this.dependencies.storage.setTaskStepState(taskId, stepId, "running", { summary: `${step.name} is starting as a workspace-owned background process.`, incrementAttempts: true, auditReference: toolRequestId, eventType: "step.started" });
     try {
-      const process2 = await this.dependencies.shell.startBackground(input, outputPath, toolRequestId);
+      const process2 = await this.dependencies.shell.startBackground(input, outputPath, toolRequestId, true);
       await this.dependencies.storage.setTaskStepState(taskId, stepId, "running", { summary: `${step.name} is running as process ${process2.pid}.`, externalProcessId: process2.pid, outputPath, auditReference: toolRequestId, eventType: "external.process.detected" });
       await this.dependencies.storage.updateTaskReality(taskId, { processIds: [.../* @__PURE__ */ new Set([...task.processIds, process2.pid])] });
       return { task: await this.get(taskId), process: process2 };
@@ -10396,11 +10614,10 @@ function runtimeToolRecoveryGuidance(toolName, errorMessage, availableTools) {
   const message = errorMessage.toLowerCase();
   const catalog = [...availableTools].sort().join(", ");
   const guidance = [`Runtime tool catalog: ${catalog || "(none)"}.`, `The failed ${toolName} invocation does not mean the tool is unavailable; distinguish argument, policy, and execution failures from capability absence.`];
-  if (/workspace-relative|traverse upward|escapes? (?:the )?(?:active )?workspace|absolute paths? require/i.test(errorMessage)) {
-    guidance.push('FORGE file tools are intentionally workspace-scoped. Do not retry them with absolute paths, ~, or .. traversal. Restart discovery at file.list path "." and use only observed workspace-relative paths.');
-    if (availableTools.has("shell.run")) guidance.push("If the user explicitly needs OS-level inspection outside the workspace, shell.run is available. Keep its workingDirectory inside the workspace and pass the external path only as a command argument.");
-  }
-  if (/eacces|eperm|permission denied|scandir/.test(message)) guidance.push("Treat unreadable filesystem paths as skippable evidence. Do not chmod/chown container, cache, or system-owned paths merely to satisfy indexing.");
+  if (/SCOPE_FAILURE/i.test(errorMessage)) guidance.push("The resolved target is outside the configured filesystem scope. Preserve the observed path and tell the user which broader scope to select in Settings; do not repeat the same request or claim the file tool is unavailable.");
+  else if (/workspace-relative|traverse upward|escapes? (?:the )?(?:active )?workspace|absolute paths? require/i.test(errorMessage)) guidance.push("File tools accept relative, parent, home, and absolute paths when permitted by the configured filesystem scope. The operating system may still deny access.");
+  if (/POLICY_FAILURE/i.test(errorMessage)) guidance.push("The operation is blocked by the current execution or network policy. State the exact setting that must be enabled; do not retry unchanged.");
+  if (/eacces|eperm|permission denied|scandir/.test(message)) guidance.push("Report unreadable paths and continue where possible. On macOS, the user may need to grant the installed FORGE app Full Disk Access in System Settings; administrator-owned paths may also require elevation. Do not chmod/chown unrelated paths merely to satisfy indexing.");
   if (toolName.startsWith("browser.") && availableTools.has("browser.read")) guidance.push("browser.read/browser.find operate on the currently visible FORGE Browser page; do not infer that browser context is absent merely because a filesystem lookup failed.");
   if (toolName.startsWith("terminal.") && availableTools.has("terminal.read")) guidance.push("terminal.read reads existing FORGE terminal sessions and is separate from workspace file traversal.");
   return guidance.join(" ");
@@ -10433,11 +10650,13 @@ function createNativeAgentRuntime(dependencies) {
       const project = await storage2.dashboard();
       const info = workspace2.info();
       if (!project || !info) throw new Error("Open a workspace before requesting agent tools.");
-      const definitions = toolRouter2.providerDefinitions();
+      const currentSettings = settings2.publicSettings();
+      const definitions = toolRouter2.providerDefinitions(currentSettings.agentExecutionMode);
       const availableTools = new Set(definitions.map((definition2) => definition2.name));
       const capabilityCatalog = [...availableTools].sort().join(", ");
       let turn = await activeAgent.askWithTools(prompt, history, definitions);
       const outcomes = [];
+      const successfulEvidence = () => outcomes.filter((outcome) => outcome.result?.success && !outcome.result.output?.missing && !outcome.result.output?.unreadable).map((outcome) => outcome.request.toolName);
       const runtimeFailures = [];
       const semanticRecordIds = /* @__PURE__ */ new Set();
       const rememberSemanticContext = (context) => {
@@ -10463,7 +10682,7 @@ function createNativeAgentRuntime(dependencies) {
         const fallback = calls.length ? null : parseStructuredToolFallback(activeProvider.id, turn.content);
         if (fallback) calls.push(fallback);
         if (!calls.length) {
-          const missingEvidence = requiredDirectEvidence(prompt, outcomes.filter((outcome) => outcome.result?.success).map((outcome) => outcome.request.toolName));
+          const missingEvidence = requiredDirectEvidence(prompt, successfulEvidence());
           if (missingEvidence.length && evidenceNudges < 3) {
             evidenceNudges += 1;
             continuationHistory.push({ role: "assistant", content: turn.content || "I have not yet gathered the explicitly requested workspace evidence." });
@@ -10478,7 +10697,7 @@ function createNativeAgentRuntime(dependencies) {
         const revision = await workspaceRevision();
         const fresh = calls.filter((call) => loopGuard.shouldRun(call, revision));
         if (!fresh.length) {
-          const missingEvidence = requiredDirectEvidence(prompt, outcomes.filter((outcome) => outcome.result?.success).map((outcome) => outcome.request.toolName));
+          const missingEvidence = requiredDirectEvidence(prompt, successfulEvidence());
           if (missingEvidence.length && evidenceNudges < 3) {
             evidenceNudges += 1;
             const evidence3 = loopGuard.observedResults().join("\n\n");
@@ -10500,12 +10719,19 @@ ${evidence2}`, continuationHistory)).content;
         const round = [];
         const validationEvidence = [];
         for (const call of fresh) {
+          if (executionTask) {
+            const currentTask = await taskRuntime2.get(executionTask.taskId);
+            if (["paused", "cancelled", "completed"].includes(currentTask.status)) {
+              validationEvidence.push(JSON.stringify({ type: currentTask.status === "paused" ? "PAUSED" : "CANCELLATION", tool: call.name, message: `Tool launch suppressed because task state is ${currentTask.status}.` }));
+              break;
+            }
+          }
           const toolOperationId = call.id || randomUUID();
           let requestId = call.id;
           let succeeded = false;
           await emitRuntimeEvent2?.("tool.requested", { operationId: toolOperationId, toolName: call.name, conversationId: state.activeConversationId, taskId: executionTask?.taskId, stepId: executionTask?.stepId });
           try {
-            const outcome = await toolRouter2.request(call, { workspaceId: project.id, workspaceRoot: info.rootPath, conversationId: state.activeConversationId, modelId: turn.modelId ?? settings2.publicSettings().apiModel, userRequest: prompt, task: executionTask });
+            const outcome = await toolRouter2.request(call, { workspaceId: project.id, workspaceRoot: info.rootPath, repositoryRoot: info.gitRoot ?? void 0, filesystemScope: currentSettings.filesystemScope, projectTreeRoot: currentSettings.projectTreeRoot || void 0, executionMode: currentSettings.agentExecutionMode, networkAccess: currentSettings.networkAccess, backgroundTasksEnabled: currentSettings.backgroundTasksEnabled, autoRepairToolArguments: currentSettings.autoRepairToolArguments, processMode: currentSettings.processMode, processTimeoutMs: currentSettings.processTimeoutMs, backgroundTaskTimeoutMs: currentSettings.backgroundTaskTimeoutMs, conversationId: state.activeConversationId, modelId: turn.modelId ?? currentSettings.apiModel, userRequest: prompt, task: executionTask });
             assertToolIdentity(outcome.request, outcome.result, state.activeConversationId);
             requestId = outcome.request.id;
             succeeded = outcome.result?.success ?? false;
@@ -10516,7 +10742,14 @@ ${evidence2}`, continuationHistory)).content;
           } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
             const guidance = runtimeToolRecoveryGuidance(call.name, message, availableTools);
-            validationEvidence.push(JSON.stringify({ toolName: call.name, success: false, error: { code: "TOOL_ROUTING_FAILED", message }, recovery: guidance }, null, 2));
+            const errorCode2 = typeof error === "object" && error && "code" in error ? String(error.code) : /SCOPE_FAILURE/.test(message) ? "SCOPE_FAILURE" : /POLICY_FAILURE/.test(message) ? "POLICY_FAILURE" : "EXECUTION_FAILURE";
+            let normalizedArguments;
+            try {
+              normalizedArguments = normalizeProviderToolCall(call, prompt).arguments;
+            } catch {
+              normalizedArguments = call.arguments;
+            }
+            validationEvidence.push(JSON.stringify({ type: errorCode2, tool: call.name, originalArguments: sanitizeToolData(call.arguments), normalizedArguments: sanitizeToolData(normalizedArguments), repairAttempted: JSON.stringify(call.arguments) !== JSON.stringify(normalizedArguments), recoverable: errorCode2 === "MALFORMED_ARGUMENTS", message, recovery: guidance }, null, 2));
             runtimeFailures.push(`Tool ${call.name} routing failed: ${message}`);
             loopGuard.record(call, await workspaceRevision(), { success: false, error: { code: "TOOL_ROUTING_FAILED", message }, output: { recovery: guidance } });
           } finally {
@@ -10530,10 +10763,21 @@ ${evidence2}`, continuationHistory)).content;
 Recovery guidance: ${runtimeToolRecoveryGuidance(result.toolName, result.error?.message ?? "Tool execution failed.", availableTools)}`;
         });
         const evidence = [...resultEvidence, ...validationEvidence].join("\n\n");
+        const redirects = executionTask ? await taskRuntime2.pendingRedirects(executionTask.taskId) : [];
+        const taskState = executionTask ? await taskRuntime2.get(executionTask.taskId) : void 0;
+        if (taskState && ["paused", "cancelled", "completed"].includes(taskState.status)) {
+          modelContent = `Agent continuation stopped because task state is ${taskState.status}.`;
+          break;
+        }
         continuationHistory.push({ role: "assistant", content: turn.content || "I requested FORGE tools." });
-        turn = await activeAgent.askWithTools(`Continue the original request using these bounded Tool Result records. Do not repeat completed tool calls. Do not claim a tool is missing when it appears in the runtime catalog. A failed file path is a scope or input failure, not proof that other tools are absent. file.* tools must stay workspace-relative; system paths require an appropriate advertised tool instead of ../ traversal. Runtime tool catalog for this turn: ${capabilityCatalog}. FORGE supplies execution identity and audit context internally.
+        const redirectText = redirects.length ? `
+
+New task instructions from the user; apply them from this safe boundary:
+${redirects.map((entry) => `- ${entry.instruction}`).join("\n")}` : "";
+        turn = await activeAgent.askWithTools(`Continue the original request using these bounded Tool Result records. Do not repeat completed tool calls. Do not claim a tool is missing when it appears in the runtime catalog. file.* paths are governed by the configured filesystem scope. A failed path or call is not proof that other tools are absent. Correct malformed arguments and retry with a valid call when useful. Runtime tool catalog for this turn: ${capabilityCatalog}. FORGE supplies execution identity and audit context internally.${redirectText}
 
 ${evidence}`, continuationHistory, definitions);
+        if (executionTask && redirects.length) await taskRuntime2.acknowledgeRedirects(executionTask.taskId, redirects.map((entry) => entry.eventId));
         rememberSemanticContext(turn.context);
       }
       const summary = [...outcomes.map(({ request, result }) => `Tool ${request.toolName} ${result?.success ? "succeeded" : "failed"}${result?.error ? `: ${result.error.message}` : ""}.`), ...runtimeFailures].join("\n");
@@ -10548,14 +10792,20 @@ ${evidence}`, continuationHistory, definitions);
     }
   };
   const runTaskStep = async (taskId) => {
-    const task = await taskRuntime2.resume(taskId);
-    const step = task.steps.find((candidate) => candidate.id === task.currentStepId);
-    if (!step || task.status !== "ready") return task;
-    const conversationId = task.lastActiveConversationId ?? task.originatingConversationId;
-    await runAgentTurn(conversationId, `Start the dependency-ready task step now. Use the required tool without supplying runtime IDs or audit metadata. Do not only describe the plan. Task: ${task.title}. Step: ${step.name}. Purpose: ${step.purpose}. Expected input: ${JSON.stringify(step.expectedInput ?? {})}. Verification: ${step.verificationCriteria.join("; ")}. When the observed evidence satisfies every criterion, request task.checkpoint using only its semantic fields; FORGE attaches the active task, step, and audit identities.`, { taskId: task.id, stepId: step.id });
-    const updated = await taskRuntime2.get(taskId);
-    if (updated.status === "ready" && updated.currentStepId && updated.currentStepId !== step.id) return runTaskStep(taskId);
-    return updated;
+    let task = await taskRuntime2.resume(taskId);
+    let advancedSteps = 0;
+    while (task.status === "ready" && task.currentStepId && (advancedSteps === 0 || settings2.publicSettings().autonomousTaskContinuation)) {
+      const step = task.steps.find((candidate) => candidate.id === task.currentStepId);
+      if (!step) break;
+      advancedSteps += 1;
+      const priorStepId = step.id;
+      const conversationId = task.lastActiveConversationId ?? task.originatingConversationId;
+      await runAgentTurn(conversationId, `Start the dependency-ready task step now. Use the required tool without supplying runtime IDs or audit metadata. Do not only describe the plan. Task: ${task.title}. Step: ${step.name}. Purpose: ${step.purpose}. Expected input: ${JSON.stringify(step.expectedInput ?? {})}. Verification: ${step.verificationCriteria.join("; ")}. When the observed evidence satisfies every criterion, request task.checkpoint using only its semantic fields; FORGE attaches the active task, step, and audit identities.`, { taskId: task.id, stepId: step.id });
+      const updated = await taskRuntime2.get(taskId);
+      if (updated.status !== "ready" || !updated.currentStepId || updated.currentStepId === priorStepId) return updated;
+      task = updated;
+    }
+    return task;
   };
   return { runAgentTurn, runTaskStep };
 }
@@ -10567,6 +10817,7 @@ const TASK_MUTATIONS = [
   IPC_CHANNELS.tasksPause,
   IPC_CHANNELS.tasksResume,
   IPC_CHANNELS.tasksCancel,
+  IPC_CHANNELS.tasksRedirect,
   IPC_CHANNELS.tasksRetryStep,
   IPC_CHANNELS.tasksHandoff
 ];
@@ -10924,8 +11175,8 @@ function detachBrowserView() {
 function appBuildInfo() {
   return {
     ...buildReleaseIdentity(app.getVersion(), app.isPackaged),
-    commit: "40097e6d29d040c1c1f64f55add34366f7d84423",
-    buildDate: "2026-09-20T07:43:45.084Z",
+    commit: "403d6f3731854466a1be0b7fb49d37192063c383",
+    buildDate: "2026-09-28T13:59:33.843Z",
     runtime: app.isPackaged ? "packaged" : "development",
     rendererSource,
     platform: process.platform,
@@ -10938,6 +11189,19 @@ const intelligence = new WorkspaceIntelligenceService(contextBuilder, storage);
 const embeddingClient = new OpenAICompatibleEmbeddingClient(() => settings.embeddingConfiguration(), (event) => emitRuntimeEvent(event.type, event.payload));
 const semanticContext = new SemanticContextService(storage, embeddingClient, () => settings.embeddingConfiguration(), (event) => emitRuntimeEvent(event.type, event.payload), workspace);
 const semanticIndexer = new SemanticIndexer(workspace, storage, embeddingClient, () => settings.embeddingConfiguration(), (event) => emitRuntimeEvent(event.type, event.payload));
+async function runSemanticRefresh(operation, trigger) {
+  try {
+    let status = await operation();
+    if (["degraded", "rebuild-required"].includes(status.state) && settings.publicSettings().autoRepairIndex) {
+      await emitRuntimeEvent("semantic.index.start", { trigger, repair: true, priorState: status.state });
+      status = await semanticIndexer.rebuild();
+    }
+    if (status.state === "degraded" || status.state === "rebuild-required") await emitRuntimeEvent("semantic.index.error", { trigger, state: status.state, message: status.lastError ?? "Semantic index requires repair." });
+    else if (status.state === "ready") await emitRuntimeEvent("context.updated", { trigger, indexedRecords: status.indexedRecords });
+  } catch (error) {
+    await emitRuntimeEvent("semantic.index.error", { trigger, message: error instanceof Error ? error.message : String(error) });
+  }
+}
 contextBuilder.useSemanticContext(semanticContext);
 const memoryService = new MemoryService(storage);
 const memoryRetriever = new MemoryRetriever(memoryService);
@@ -10993,12 +11257,12 @@ function register(channel, action) {
       if (event) {
         await emitRuntimeEvent(event, { channel });
         await emitRuntimeEvent("context.invalidated", { channel });
-        if (["task.changed", "memory.changed"].includes(event) && settings.publicSettings().embeddingEnabled) void semanticIndexer.refreshDurableState().then(() => emitRuntimeEvent("context.updated", { channel })).catch(() => void 0);
+        if (["task.changed", "memory.changed"].includes(event) && settings.publicSettings().embeddingEnabled && settings.publicSettings().autoIndex) void runSemanticRefresh(() => semanticIndexer.refreshDurableState(), `durable-state:${channel}`);
       }
       return { success: true, data };
     } catch (error) {
       const code = error instanceof Error && "code" in error ? String(error.code) : void 0;
-      const message = code === "EACCES" || code === "EPERM" ? "FORGE does not have permission to access that location. Choose a user-owned workspace or update the file permissions, then try again." : error instanceof Error ? error.message : "An unexpected error occurred.";
+      const message = code === "EACCES" || code === "EPERM" ? process.platform === "darwin" ? "macOS denied access. Grant the installed FORGE app Full Disk Access in System Settings → Privacy & Security, then relaunch. Administrator-owned paths may still require separate elevation." : "The operating system denied access to that location. Check the file owner and permissions, then try again." : error instanceof Error ? error.message : "An unexpected error occurred.";
       return { success: false, error: { message, code } };
     }
   });
@@ -11019,23 +11283,24 @@ async function openWorkspaceAt(rootPath) {
   const info = await workspace.open(rootPath);
   await git.init(info.rootPath);
   await storage.init(info.rootPath);
+  await settings.rememberWorkspacePath(info.rootPath);
   workspace.watch();
   await refreshBrowserRecords();
-  if (settings.publicSettings().embeddingEnabled) void semanticIndexer.incremental().then(() => emitRuntimeEvent("context.updated", { reason: "workspace-indexed" })).catch(() => void 0);
+  if (settings.publicSettings().embeddingEnabled && settings.publicSettings().autoIndex) void runSemanticRefresh(() => semanticIndexer.incremental(), "workspace-open");
   return info;
 }
 const pendingSemanticPaths = /* @__PURE__ */ new Set();
 let semanticRefreshTimer = null;
 workspace.on("changed", (relativePath2) => {
   void emitRuntimeEvent("file.changed", { path: relativePath2 });
-  if (!settings.publicSettings().embeddingEnabled) return;
+  if (!settings.publicSettings().embeddingEnabled || !settings.publicSettings().autoIndex) return;
   pendingSemanticPaths.add(relativePath2);
   if (semanticRefreshTimer) clearTimeout(semanticRefreshTimer);
   semanticRefreshTimer = setTimeout(() => {
     semanticRefreshTimer = null;
     const paths = [...pendingSemanticPaths];
     pendingSemanticPaths.clear();
-    void semanticIndexer.refreshPaths(paths).then(() => emitRuntimeEvent("context.updated", { paths })).catch(() => void 0);
+    void runSemanticRefresh(() => semanticIndexer.refreshPaths(paths), `file-change:${paths.length}`);
   }, 300);
 });
 function liveService() {
@@ -11317,7 +11582,7 @@ function registerHandlers() {
     const result = await settings.save(request);
     await applyAISettings();
     updater.setChannel(result.updateChannel);
-    if (result.embeddingEnabled) void semanticIndexer.incremental().catch(() => void 0);
+    if (result.embeddingEnabled && result.autoIndex) void runSemanticRefresh(() => semanticIndexer.incremental(), "settings-save");
     return result;
   });
   register(IPC_CHANNELS.settingsTestApi, async () => aiProvider.testConnection());
@@ -11410,6 +11675,21 @@ function registerHandlers() {
   });
   register(IPC_CHANNELS.toolRequestCancel, async (request) => toolRouter.cancel(request.requestId, await toolContext()));
   register(IPC_CHANNELS.toolActionsList, async (request) => storage.listActions(request));
+  register(IPC_CHANNELS.toolCatalog, async () => toolRouter.capabilityCatalog(settings.publicSettings().agentExecutionMode));
+  register(IPC_CHANNELS.toolExecute, async (request) => {
+    const current = settings.publicSettings();
+    const context = await toolContext();
+    const outcome = await toolRouter.request({ id: request.requestId, name: request.toolName, provider: "forge-tool-panel", arguments: request.arguments }, { ...context, repositoryRoot: workspace.info()?.gitRoot ?? void 0, filesystemScope: current.filesystemScope, projectTreeRoot: current.projectTreeRoot || void 0, executionMode: current.agentExecutionMode, networkAccess: current.networkAccess, backgroundTasksEnabled: current.backgroundTasksEnabled, autoRepairToolArguments: current.autoRepairToolArguments, processMode: current.processMode, processTimeoutMs: current.processTimeoutMs, backgroundTaskTimeoutMs: current.backgroundTaskTimeoutMs, userRequest: "The user explicitly ran this capability from the FORGE Tooling panel." });
+    if (!outcome.result) throw new Error(`Tool ${request.toolName} did not return an execution result.`);
+    return outcome.result;
+  });
+  register(IPC_CHANNELS.agentStopAll, async () => {
+    const project = await storage.dashboard();
+    if (!project) return { toolsCancelled: 0, tasksCancelled: 0 };
+    const toolsCancelled = await toolRouter.cancelAll(project.id);
+    const tasksCancelled = await taskRuntime.stopAll();
+    return { toolsCancelled, tasksCancelled };
+  });
   register(IPC_CHANNELS.editorDirtyUpdate, async (request) => {
     dirtyEditorPaths.clear();
     for (const value of request.paths) if (value && !value.split(/[\\/]/).includes("..")) dirtyEditorPaths.add(value);
@@ -11442,6 +11722,7 @@ function registerHandlers() {
   register(IPC_CHANNELS.tasksResume, async (request) => nativeAgent.runTaskStep(request.taskId));
   register(IPC_CHANNELS.tasksPause, async (request) => taskRuntime.pause(request.taskId, request.reason));
   register(IPC_CHANNELS.tasksCancel, async (request) => taskRuntime.cancel(request.taskId, request.reason, request.trackingOnly));
+  register(IPC_CHANNELS.tasksRedirect, async (request) => taskRuntime.redirect(request.taskId, request.instruction));
   register(IPC_CHANNELS.tasksDelete, async (request) => {
     await storage.deletePersistentTask(request.taskId);
     return void 0;
@@ -11550,8 +11831,8 @@ if (!ownsSingleInstanceLock) {
       await applyAISettings();
       updater.setChannel(settings.updateChannel());
       registerHandlers();
-      const startupWorkspace = process.argv.find((argument) => argument.startsWith("--workspace="))?.slice("--workspace=".length);
-      if (startupWorkspace) await openWorkspaceAt(startupWorkspace);
+      const startupWorkspace = process.argv.find((argument) => argument.startsWith("--workspace="))?.slice("--workspace=".length) ?? settings.lastWorkspacePath();
+      if (startupWorkspace) await openWorkspaceAt(startupWorkspace).catch(() => void 0);
       createWindow();
       app.on("activate", () => {
         if (BrowserWindow.getAllWindows().length === 0) createWindow();

@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { promises as fs, type Dirent } from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import type { GitHubService, GitService } from '@forge/git';
 import type { ShellService, ShellRunInput } from '@forge/shell';
@@ -13,11 +14,19 @@ const MAX_TEXT_BYTES = 2_000_000;
 const MAX_RANGED_TEXT_BYTES = 64_000_000;
 const MAX_SEARCH_RESULTS = 20000;
 const MAX_LIST_ENTRIES = 10_000;
-const SKIPPED_WORKSPACE_NAMES = new Set(['.git', '.forge', '.obsidian', 'node_modules', 'dist_electron', 'out']);
-const SKIPPED_WORKSPACE_PATHS = [/(?:^|[/])\.local[/]share[/]containers(?:[/]|$)/i, /(?:^|[/])\.cache(?:[/]|$)/i];
 const textOutput = z.object({ success: z.boolean() }).passthrough();
-const relativePath = z.string().min(1).max(4_096).refine((value) => !path.isAbsolute(value) && !value.split(/[\\/]/).includes('..'), 'Path must be workspace-relative and may not traverse upward.');
+const filePath = z.string().min(1).max(4_096).refine((value) => !value.includes('\0'), 'Path must not contain a null byte.');
+const relativePath = filePath.refine((value) => !path.isAbsolute(value) && !value.split(/[\\/]/).includes('..'), 'Repository path must be relative.');
 const reason = z.string().min(3).max(2_000);
+
+export type FilesystemScope = 'workspace' | 'repository' | 'project-tree' | 'home' | 'full';
+
+interface FilesystemPathPolicy {
+  workspaceRoot: string;
+  scope: FilesystemScope;
+  repositoryRoot?: string;
+  projectTreeRoot?: string;
+}
 
 export interface AuditRecord {
   id: string;
@@ -60,6 +69,16 @@ export interface ToolRouterContext {
   conversationId: string;
   modelId: string;
   workspaceRoot: string;
+  filesystemScope?: FilesystemScope;
+  repositoryRoot?: string;
+  projectTreeRoot?: string;
+  executionMode?: 'disabled' | 'controlled' | 'allow-all';
+  networkAccess?: { web: boolean; git: boolean; packageManager: boolean; general: boolean };
+  backgroundTasksEnabled?: boolean;
+  autoRepairToolArguments?: boolean;
+  processTimeoutMs?: number;
+  backgroundTaskTimeoutMs?: number;
+  processMode?: 'standard' | 'full-local-compute';
   /** Current natural-language request, used only to produce an audit reason. */
   userRequest?: string;
   /** Runtime-owned persistent task linkage, never exposed as tool arguments. */
@@ -71,28 +90,69 @@ type ToolExecutor = (input: any, request: ToolRequest, signal: AbortSignal) => P
 
 const inside = (root: string, candidate: string): boolean => candidate === root || candidate.startsWith(`${root}${path.sep}`);
 const skippableFileSystemError = (error: unknown): boolean => error instanceof Error && 'code' in error && ['EACCES', 'EPERM', 'ENOENT'].includes(String(error.code));
-const skippedWorkspacePath = (root: string, candidate: string): boolean => {
-  const relative = path.relative(root, candidate).replaceAll('\\', '/');
-  return relative.split('/').some((part) => SKIPPED_WORKSPACE_NAMES.has(part)) || SKIPPED_WORKSPACE_PATHS.some((pattern) => pattern.test(relative));
-};
+const displayPath = (root: string, candidate: string): string => inside(root, candidate) ? path.relative(root, candidate) || '.' : candidate;
 
 export async function resolveContainedPath(rootValue: string, relative: string, allowMissing = false): Promise<string> {
-  if (!relative || path.isAbsolute(relative) || relative.split(/[\\/]/).includes('..')) throw new Error('Path must be workspace-relative and may not traverse upward.');
+  if (!relative || relative.includes('\0')) throw new Error('A non-empty path without null bytes is required.');
   const root = await fs.realpath(rootValue);
-  const candidate = path.resolve(root, relative);
-  if (!inside(root, candidate)) throw new Error('Path escapes the active workspace.');
+  const selected = relative === '~' ? os.homedir() : relative.startsWith(`~${path.sep}`) ? path.join(os.homedir(), relative.slice(2)) : relative;
+  const candidate = path.resolve(root, selected);
   let inspected = candidate;
   if (allowMissing) {
-    while (inspected !== root) {
+    while (true) {
       try { await fs.lstat(inspected); break; } catch (error) {
         if (!(error instanceof Error) || !('code' in error) || error.code !== 'ENOENT') throw error;
-        inspected = path.dirname(inspected);
+        const parent = path.dirname(inspected);
+        if (parent === inspected) throw error;
+        inspected = parent;
       }
     }
   }
-  const resolved = await fs.realpath(inspected);
-  if (!inside(root, resolved)) throw new Error('Symlink resolves outside the active workspace.');
-  if (!allowMissing && !inside(root, await fs.realpath(candidate))) throw new Error('Symlink resolves outside the active workspace.');
+  await fs.realpath(inspected);
+  return candidate;
+}
+
+function isWithin(root: string, candidate: string): boolean {
+  const relative = path.relative(root, candidate);
+  return relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative));
+}
+
+async function resolveExistingParent(candidate: string, allowMissing: boolean): Promise<string> {
+  if (!allowMissing) return fs.realpath(candidate);
+  const suffix: string[] = [];
+  let existing = candidate;
+  while (true) {
+    try {
+      await fs.lstat(existing);
+      return path.resolve(await fs.realpath(existing), ...suffix.reverse());
+    } catch (error) {
+      if (!(error instanceof Error) || !('code' in error) || error.code !== 'ENOENT') throw error;
+      const parent = path.dirname(existing);
+      if (parent === existing) throw error;
+      suffix.push(path.basename(existing));
+      existing = parent;
+    }
+  }
+}
+
+export async function resolveScopedPath(policy: FilesystemPathPolicy, requestedPath: string, allowMissing = false): Promise<string> {
+  if (!requestedPath || requestedPath.includes('\0')) throw new Error('A non-empty path without null bytes is required.');
+  const requested = requestedPath === '~' ? os.homedir() : requestedPath.startsWith('~/') || requestedPath.startsWith(`~${path.sep}`)
+    ? path.join(os.homedir(), requestedPath.slice(2))
+    : requestedPath;
+  const candidate = await resolveExistingParent(path.resolve(policy.workspaceRoot, requested), allowMissing);
+  let allowedRoot: string | undefined;
+  if (policy.scope === 'workspace') allowedRoot = await fs.realpath(policy.workspaceRoot);
+  else if (policy.scope === 'repository') {
+    if (!policy.repositoryRoot) throw new Error('Repository scope is unavailable because the active Git repository root could not be identified.');
+    allowedRoot = await fs.realpath(policy.repositoryRoot);
+  } else if (policy.scope === 'project-tree') {
+    if (!policy.projectTreeRoot) throw new Error('Project-tree scope requires a selected project root in Settings.');
+    allowedRoot = await fs.realpath(policy.projectTreeRoot);
+  } else if (policy.scope === 'home') allowedRoot = await fs.realpath(os.homedir());
+  if (allowedRoot && !isWithin(allowedRoot, candidate)) {
+    throw new Error(`SCOPE_FAILURE: Resolved path ${candidate} is outside the configured ${policy.scope} scope (${allowedRoot}).`);
+  }
   return candidate;
 }
 
@@ -126,7 +186,9 @@ async function atomicWrite(absolute: string, content: string, encoding: 'utf8' |
 
 async function backupPath(root: string, relative: string): Promise<string> {
   const hash = createHash('sha256').update(`${Date.now()}\0${relative}`).digest('hex').slice(0, 12);
-  const destination = path.join(root, '.forge', 'backups', `${Date.now()}-${hash}`, relative);
+  const absolute = path.resolve(root, relative);
+  const backupName = inside(root, absolute) ? path.relative(root, absolute) : path.join('external', path.basename(absolute));
+  const destination = path.join(root, '.forge', 'backups', `${Date.now()}-${hash}`, backupName);
   await fs.mkdir(path.dirname(destination), { recursive: true });
   return destination;
 }
@@ -136,16 +198,16 @@ const definition = <I, O>(value: ToolDefinition<I, O>): ToolDefinition<I, O> => 
 export function createToolRegistry(): ToolRegistry {
   const registry = new ToolRegistry();
   const base = { outputSchema: textOutput, cancellable: true };
-  registry.register(definition({ ...base, name: 'file.list', purpose: 'Discover workspace files from the root first; use a nested path only after it has been observed. Continue with the returned offset when truncated.', inputSchema: z.object({ path: z.string().max(4_096).default('.'), recursive: z.boolean().default(false), maxDepth: z.number().int().min(0).max(20).default(2), maxEntries: z.number().int().min(1).max(MAX_LIST_ENTRIES).default(500), offset: z.number().int().min(0).max(1_000_000).default(0) }), sideEffect: 'read', workspaceBoundary: 'required', timeoutMs: 10_000, audit: { category: 'filesystem', recordsAffectedPaths: false, recordsExitCode: false, externalDataTransfer: false }, networkAccess: false, describeTarget: (input) => input.path ?? '.', describeEffect: () => 'Read a bounded workspace directory listing, beginning at the workspace root by default.' }));
-  registry.register(definition({ ...base, name: 'file.read', purpose: 'Read a bounded range of a supported workspace text file. Use file.readBinary for binary content.', inputSchema: z.object({ path: relativePath, startLine: z.number().int().min(1).optional(), endLine: z.number().int().min(1).optional(), offset: z.number().int().min(0).max(MAX_RANGED_TEXT_BYTES).optional(), maxCharacters: z.number().int().min(1).max(200_000).default(12_000) }).refine((input) => input.endLine === undefined || input.startLine === undefined || input.endLine >= input.startLine, 'endLine must not precede startLine.').refine((input) => input.offset === undefined || (input.startLine === undefined && input.endLine === undefined), 'offset cannot be combined with line ranges.'), sideEffect: 'read', workspaceBoundary: 'required', timeoutMs: 10_000, audit: { category: 'filesystem', recordsAffectedPaths: false, recordsExitCode: false, externalDataTransfer: false }, networkAccess: false, describeTarget: (input) => input.path, describeEffect: () => 'Read bounded text without changing the workspace.' }));
-  registry.register(definition({ ...base, name: 'file.read.binary', purpose: 'Read bounded binary content as base64 together with file metadata.', inputSchema: z.object({ path: relativePath, maxBytes: z.number().int().min(1).max(25_000_000).default(2_000_000) }), sideEffect: 'read', workspaceBoundary: 'required', timeoutMs: 20_000, audit: { category: 'filesystem', recordsAffectedPaths: false, recordsExitCode: false, externalDataTransfer: false }, networkAccess: false, describeTarget: (input) => input.path, describeEffect: () => 'Read binary bytes as bounded base64 without changing the workspace.' }));
-  registry.register(definition({ ...base, name: 'file.search', purpose: 'Search supported workspace text files. When truncated, continue using the returned offset.', inputSchema: z.object({ query: z.string().min(1).max(500), path: z.string().max(4_096).default('.'), caseSensitive: z.boolean().default(false), maxResults: z.number().int().min(1).max(MAX_SEARCH_RESULTS).default(50), offset: z.number().int().min(0).max(100_000).default(0) }), sideEffect: 'read', workspaceBoundary: 'required', timeoutMs: 20_000, audit: { category: 'filesystem', recordsAffectedPaths: false, recordsExitCode: false, externalDataTransfer: false }, networkAccess: false, describeTarget: (input) => input.path ?? '.', describeEffect: (input) => `Search workspace text for ${JSON.stringify(input.query)}.` }));
-  registry.register(definition({ ...base, name: 'file.create', purpose: 'Create a workspace file.', inputSchema: z.object({ path: relativePath, content: z.string().max(MAX_TEXT_BYTES), reason }), sideEffect: 'workspace-write', workspaceBoundary: 'required', timeoutMs: 10_000, audit: { category: 'filesystem', recordsAffectedPaths: true, recordsExitCode: false, externalDataTransfer: false }, networkAccess: false, describeTarget: (input) => input.path, describeEffect: () => 'Create a new file atomically.' }));
-  registry.register(definition({ ...base, name: 'file.write', purpose: 'Replace a workspace text file after showing a diff.', inputSchema: z.object({ path: relativePath, content: z.string().max(MAX_TEXT_BYTES), reason }), sideEffect: 'workspace-write', workspaceBoundary: 'required', timeoutMs: 10_000, audit: { category: 'filesystem', recordsAffectedPaths: true, recordsExitCode: false, externalDataTransfer: false }, networkAccess: false, describeTarget: (input) => input.path, describeEffect: () => 'Atomically write the approved diff with a rollback backup.' }));
-  registry.register(definition({ ...base, name: 'file.patch', purpose: 'Apply a targeted workspace text replacement.', inputSchema: z.object({ path: relativePath, expected: z.string().min(1).max(MAX_TEXT_BYTES), replacement: z.string().max(MAX_TEXT_BYTES), replaceAll: z.boolean().default(false), reason }), sideEffect: 'workspace-write', workspaceBoundary: 'required', timeoutMs: 10_000, audit: { category: 'filesystem', recordsAffectedPaths: true, recordsExitCode: false, externalDataTransfer: false }, networkAccess: false, describeTarget: (input) => input.path, describeEffect: () => 'Apply the displayed targeted patch atomically.' }));
-  for (const name of ['file.rename', 'file.move'] as const) registry.register(definition({ ...base, name, purpose: 'Move a workspace path without overwriting.', inputSchema: z.object({ from: relativePath, to: relativePath, reason }), sideEffect: 'workspace-write', workspaceBoundary: 'required', timeoutMs: 10_000, audit: { category: 'filesystem', recordsAffectedPaths: true, recordsExitCode: false, externalDataTransfer: false }, networkAccess: false, describeTarget: (input) => `${input.from} → ${input.to}`, describeEffect: () => 'Move the path without overwriting the destination.' }));
-  registry.register(definition({ ...base, name: 'directory.create', purpose: 'Create a workspace directory.', inputSchema: z.object({ path: relativePath, reason }), sideEffect: 'workspace-write', workspaceBoundary: 'required', timeoutMs: 10_000, audit: { category: 'filesystem', recordsAffectedPaths: true, recordsExitCode: false, externalDataTransfer: false }, networkAccess: false, describeTarget: (input) => input.path, describeEffect: () => 'Create a directory inside the workspace.' }));
-  registry.register(definition({ ...base, name: 'file.delete', purpose: 'Delete a workspace path after creating a rollback backup.', inputSchema: z.object({ path: relativePath, reason }), sideEffect: 'destructive', workspaceBoundary: 'required', timeoutMs: 20_000, audit: { category: 'filesystem', recordsAffectedPaths: true, recordsExitCode: false, externalDataTransfer: false }, networkAccess: false, describeTarget: (input) => input.path, describeEffect: () => 'Back up then delete the selected source path.' }));
+  registry.register(definition({ ...base, name: 'file.list', purpose: 'List files and hidden entries at a relative, parent, home, or absolute directory path. Omit path for the active workspace root. Continue with the returned offset when truncated.', inputSchema: z.object({ path: filePath.default('.'), recursive: z.boolean().default(false), maxDepth: z.number().int().min(0).max(20).default(2), maxEntries: z.number().int().min(1).max(MAX_LIST_ENTRIES).default(500), offset: z.number().int().min(0).max(1_000_000).default(0) }), sideEffect: 'read', workspaceBoundary: 'required', timeoutMs: 10_000, audit: { category: 'filesystem', recordsAffectedPaths: false, recordsExitCode: false, externalDataTransfer: false }, networkAccess: false, describeTarget: (input) => input.path ?? '.', describeEffect: () => 'Read a bounded directory listing, beginning at the workspace root by default.' }));
+  registry.register(definition({ ...base, name: 'file.read', purpose: 'Read a bounded range of any accessible text file, including hidden and absolute paths. Use file.readBinary for binary content.', inputSchema: z.object({ path: filePath, startLine: z.number().int().min(1).optional(), endLine: z.number().int().min(1).optional(), offset: z.number().int().min(0).max(MAX_RANGED_TEXT_BYTES).optional(), maxCharacters: z.number().int().min(1).max(200_000).default(12_000) }).refine((input) => input.endLine === undefined || input.startLine === undefined || input.endLine >= input.startLine, 'endLine must not precede startLine.').refine((input) => input.offset === undefined || (input.startLine === undefined && input.endLine === undefined), 'offset cannot be combined with line ranges.'), sideEffect: 'read', workspaceBoundary: 'required', timeoutMs: 10_000, audit: { category: 'filesystem', recordsAffectedPaths: false, recordsExitCode: false, externalDataTransfer: false }, networkAccess: false, describeTarget: (input) => input.path, describeEffect: () => 'Read bounded text without changing the workspace.' }));
+  registry.register(definition({ ...base, name: 'file.read.binary', purpose: 'Read bounded binary content at any accessible path as base64 together with file metadata.', inputSchema: z.object({ path: filePath, maxBytes: z.number().int().min(1).max(25_000_000).default(2_000_000) }), sideEffect: 'read', workspaceBoundary: 'required', timeoutMs: 20_000, audit: { category: 'filesystem', recordsAffectedPaths: false, recordsExitCode: false, externalDataTransfer: false }, networkAccess: false, describeTarget: (input) => input.path, describeEffect: () => 'Read binary bytes as bounded base64 without changing the workspace.' }));
+  registry.register(definition({ ...base, name: 'file.search', purpose: 'Search accessible text files, including hidden files and paths outside the active workspace. When truncated, continue using the returned offset.', inputSchema: z.object({ query: z.string().min(1).max(500), path: filePath.default('.'), caseSensitive: z.boolean().default(false), maxResults: z.number().int().min(1).max(MAX_SEARCH_RESULTS).default(50), offset: z.number().int().min(0).max(100_000).default(0) }), sideEffect: 'read', workspaceBoundary: 'required', timeoutMs: 20_000, audit: { category: 'filesystem', recordsAffectedPaths: false, recordsExitCode: false, externalDataTransfer: false }, networkAccess: false, describeTarget: (input) => input.path ?? '.', describeEffect: (input) => `Search workspace text for ${JSON.stringify(input.query)}.` }));
+  registry.register(definition({ ...base, name: 'file.create', purpose: 'Create a file at any accessible path.', inputSchema: z.object({ path: filePath, content: z.string().max(MAX_TEXT_BYTES), reason }), sideEffect: 'workspace-write', workspaceBoundary: 'required', timeoutMs: 10_000, audit: { category: 'filesystem', recordsAffectedPaths: true, recordsExitCode: false, externalDataTransfer: false }, networkAccess: false, describeTarget: (input) => input.path, describeEffect: () => 'Create a new file atomically.' }));
+  registry.register(definition({ ...base, name: 'file.write', purpose: 'Replace an accessible text file after showing a diff.', inputSchema: z.object({ path: filePath, content: z.string().max(MAX_TEXT_BYTES), reason }), sideEffect: 'workspace-write', workspaceBoundary: 'required', timeoutMs: 10_000, audit: { category: 'filesystem', recordsAffectedPaths: true, recordsExitCode: false, externalDataTransfer: false }, networkAccess: false, describeTarget: (input) => input.path, describeEffect: () => 'Atomically write the diff with a rollback backup.' }));
+  registry.register(definition({ ...base, name: 'file.patch', purpose: 'Apply a targeted text replacement to an accessible file.', inputSchema: z.object({ path: filePath, expected: z.string().min(1).max(MAX_TEXT_BYTES), replacement: z.string().max(MAX_TEXT_BYTES), replaceAll: z.boolean().default(false), reason }), sideEffect: 'workspace-write', workspaceBoundary: 'required', timeoutMs: 10_000, audit: { category: 'filesystem', recordsAffectedPaths: true, recordsExitCode: false, externalDataTransfer: false }, networkAccess: false, describeTarget: (input) => input.path, describeEffect: () => 'Apply the displayed targeted patch atomically.' }));
+  for (const name of ['file.rename', 'file.move'] as const) registry.register(definition({ ...base, name, purpose: 'Move an accessible path without overwriting.', inputSchema: z.object({ from: filePath, to: filePath, reason }), sideEffect: 'workspace-write', workspaceBoundary: 'required', timeoutMs: 10_000, audit: { category: 'filesystem', recordsAffectedPaths: true, recordsExitCode: false, externalDataTransfer: false }, networkAccess: false, describeTarget: (input) => `${input.from} → ${input.to}`, describeEffect: () => 'Move the path without overwriting the destination.' }));
+  registry.register(definition({ ...base, name: 'directory.create', purpose: 'Create a directory at any accessible path.', inputSchema: z.object({ path: filePath, reason }), sideEffect: 'workspace-write', workspaceBoundary: 'required', timeoutMs: 10_000, audit: { category: 'filesystem', recordsAffectedPaths: true, recordsExitCode: false, externalDataTransfer: false }, networkAccess: false, describeTarget: (input) => input.path, describeEffect: () => 'Create a directory at the requested path.' }));
+  registry.register(definition({ ...base, name: 'file.delete', purpose: 'Delete an accessible path after creating a rollback backup.', inputSchema: z.object({ path: filePath, reason }), sideEffect: 'destructive', workspaceBoundary: 'required', timeoutMs: 20_000, audit: { category: 'filesystem', recordsAffectedPaths: true, recordsExitCode: false, externalDataTransfer: false }, networkAccess: false, describeTarget: (input) => input.path, describeEffect: () => 'Back up then delete the selected source path.' }));
   registry.register(definition({ ...base, name: 'terminal.read', purpose: 'Read bounded recent output from an existing user terminal session.', inputSchema: z.object({ sessionId: z.string().uuid().optional(), maxCharacters: z.number().int().min(100).max(20_000).default(4_000) }), sideEffect: 'read', workspaceBoundary: 'required', timeoutMs: 5_000, audit: { category: 'shell', recordsAffectedPaths: false, recordsExitCode: true, externalDataTransfer: false }, networkAccess: false, describeTarget: (input) => input.sessionId ?? 'all terminal sessions', describeEffect: () => 'Read bounded, redacted recent terminal evidence without changing the session.' }));
 
   const gitRead = (name: 'git.status' | 'git.diff' | 'git.log' | 'git.branches', schema: any, effect: string): void => registry.register(definition({ ...base, name, purpose: effect, inputSchema: schema, sideEffect: 'read', workspaceBoundary: 'required', timeoutMs: 20_000, audit: { category: 'git', recordsAffectedPaths: false, recordsExitCode: false, externalDataTransfer: false }, networkAccess: false, describeTarget: () => 'active Git workspace', describeEffect: () => effect }));
@@ -153,7 +215,7 @@ export function createToolRegistry(): ToolRegistry {
   for (const name of ['git.stage', 'git.unstage'] as const) registry.register(definition({ ...base, name, purpose: `${name === 'git.stage' ? 'Stage' : 'Unstage'} selected Git paths.`, inputSchema: z.object({ files: z.array(relativePath).min(1).max(200), reason }), sideEffect: 'workspace-write', workspaceBoundary: 'required', timeoutMs: 20_000, audit: { category: 'git', recordsAffectedPaths: true, recordsExitCode: false, externalDataTransfer: false }, networkAccess: false, describeTarget: (input) => input.files.join(', '), describeEffect: () => `${name === 'git.stage' ? 'Stage' : 'Unstage'} only the listed paths.` }));
   registry.register(definition({ ...base, name: 'git.commit', purpose: 'Commit the exact staged Git paths.', inputSchema: z.object({ message: z.string().min(1).max(5_000), reason }), sideEffect: 'repository-write', workspaceBoundary: 'required', timeoutMs: 60_000, audit: { category: 'git', recordsAffectedPaths: true, recordsExitCode: false, externalDataTransfer: false }, networkAccess: false, describeTarget: () => 'current branch and staged files', describeEffect: (input) => `Create a commit with message ${JSON.stringify(input.message)}.` }));
   for (const name of ['git.pull', 'git.push'] as const) registry.register(definition({ ...base, name, purpose: `${name === 'git.pull' ? 'Pull from' : 'Push to'} the configured remote.`, inputSchema: z.object({ reason }), sideEffect: 'write-network', workspaceBoundary: 'required', timeoutMs: 120_000, audit: { category: 'git', recordsAffectedPaths: true, recordsExitCode: false, externalDataTransfer: true }, networkAccess: true, describeTarget: () => 'origin and current branch', describeEffect: () => `${name === 'git.pull' ? 'Receive remote changes' : 'Send local commits'} using protected Git credentials.` }));
-  registry.register(definition({ ...base, name: 'shell.run', purpose: 'Run one executable with a separate argument array. Use bash -lc for shell operators, pipes, redirects, globbing, or substitutions.', inputSchema: z.object({ command: z.string().min(1).max(4_096).describe('Executable name only, such as hermes, sha256sum, or bash. Do not include arguments in this field.'), args: z.array(z.string().max(32_000)).max(500).default([]).describe('Arguments as separate array entries. For shell syntax use ["-lc", "<script>"] with command "bash".'), workingDirectory: z.string().max(4_096).optional().describe('Workspace-relative cwd. Omit to use the validated active workspace root.'), timeoutMs: z.number().int().min(100).max(600_000).default(120_000), environment: z.record(z.string()).optional(), environmentAllowlist: z.array(z.string()).max(100).default([]), networkProfile: z.enum(['offline', 'network', 'package-manager', 'git']).default('offline'), reason, expectedOutcome: z.string().min(1).max(2_000) }), sideEffect: 'process', workspaceBoundary: 'required', timeoutMs: 600_000, audit: { category: 'shell', recordsAffectedPaths: true, recordsExitCode: true, externalDataTransfer: false }, networkAccess: true, describeTarget: (input) => [input.command, ...(input.args ?? [])].map(quoteArgument).join(' '), describeEffect: (input) => `${input.expectedOutcome} Network profile: ${input.networkProfile}.` }));
+  registry.register(definition({ ...base, name: 'shell.run', purpose: 'Run one executable with a separate argument array. Use bash -lc for shell operators, pipes, redirects, globbing, or substitutions.', inputSchema: z.object({ command: z.string().min(1).max(4_096).describe('Executable name only, such as hermes, sha256sum, or bash. Do not include arguments in this field.'), args: z.array(z.string().max(32_000)).max(500).default([]).describe('Arguments as separate array entries. For shell syntax use ["-lc", "<script>"] with command "bash".'), workingDirectory: filePath.optional().describe('Absolute or relative cwd. Relative paths start at the active workspace root.'), timeoutMs: z.number().int().min(100).max(600_000).default(120_000), environment: z.record(z.string()).optional(), environmentAllowlist: z.array(z.string()).max(100).default([]), networkProfile: z.enum(['offline', 'network', 'package-manager', 'git']).default('offline'), reason, expectedOutcome: z.string().min(1).max(2_000) }), sideEffect: 'process', workspaceBoundary: 'required', timeoutMs: 600_000, audit: { category: 'shell', recordsAffectedPaths: true, recordsExitCode: true, externalDataTransfer: false }, networkAccess: true, describeTarget: (input) => [input.command, ...(input.args ?? [])].map(quoteArgument).join(' '), describeEffect: (input) => `${input.expectedOutcome} Network profile: ${input.networkProfile}.` }));
   registry.register(definition({ ...base, name: 'web.search', purpose: 'Search the public web when external research is enabled. Workspace content is never sent automatically.', inputSchema: z.object({ query: z.string().min(1).max(1_000), reason, projectDataSent: z.literal('None').default('None') }), sideEffect: 'read-network', workspaceBoundary: 'not-applicable', timeoutMs: 30_000, audit: { category: 'web', recordsAffectedPaths: false, recordsExitCode: false, externalDataTransfer: true }, networkAccess: true, describeTarget: (input) => input.query, describeEffect: () => 'Send the exact public query to an external search service and return cited results.' }));
   registry.register(definition({ ...base, name: 'web.fetch', purpose: 'Retrieve a public HTTP(S) resource when external research is enabled. Workspace content is never sent automatically.', inputSchema: z.object({ url: z.string().url().max(8_000), reason, projectDataSent: z.literal('None').default('None') }), sideEffect: 'read-network', workspaceBoundary: 'not-applicable', timeoutMs: 30_000, audit: { category: 'web', recordsAffectedPaths: false, recordsExitCode: false, externalDataTransfer: true }, networkAccess: true, describeTarget: (input) => input.url, describeEffect: () => 'Retrieve bounded public web evidence without browser automation.' }));
   registry.register(definition({ ...base, name: 'browser.open', purpose: 'Open a validated public HTTP(S) URL in the user-visible FORGE Browser.', inputSchema: z.object({ url: z.string().url().max(8_000), reason, projectDataSent: z.literal('None').default('None') }), sideEffect: 'read-network', workspaceBoundary: 'not-applicable', timeoutMs: 45_000, audit: { category: 'web', recordsAffectedPaths: false, recordsExitCode: false, externalDataTransfer: true }, networkAccess: true, describeTarget: (input) => input.url, describeEffect: () => 'Navigate the visible FORGE Browser to this public URL. The destination and any rendered content remain external data.' }));
@@ -185,14 +247,14 @@ export function createToolRegistry(): ToolRegistry {
   for (const name of ['task.resume', 'task.pause', 'task.cancel'] as const) registry.register(definition({ ...base, name, purpose: `${name.slice(5)} a workspace-owned task .`, inputSchema: z.object({ taskId: z.string().uuid(), reason, trackingOnly: z.boolean().default(true) }), sideEffect: 'workspace-write', workspaceBoundary: 'required', timeoutMs: 20_000, audit: { category: 'memory', recordsAffectedPaths: false, recordsExitCode: false, externalDataTransfer: false }, networkAccess: false, describeTarget: (input) => input.taskId, describeEffect: () => `${name.slice(5)} task tracking without changing execution policy.` }));
   registry.register(definition({ ...base, name: 'task.checkpoint', purpose: 'Record a checkpoint for the active task step; FORGE supplies task and audit identities internally.', inputSchema: z.object({ name: z.string().min(1).max(300), summary: z.string().min(1).max(4_000), verified: z.boolean().default(false), evidence: z.unknown().optional(), reason }), sideEffect: 'workspace-write', workspaceBoundary: 'required', timeoutMs: 10_000, audit: { category: 'memory', recordsAffectedPaths: false, recordsExitCode: false, externalDataTransfer: false }, networkAccess: false, describeTarget: () => 'the active workspace task step', describeEffect: () => 'Persist a structured checkpoint without executing another tool.' }));
   registry.register(definition({ ...base, name: 'task.handoff', purpose: 'Generate a Markdown projection of the active workspace task.', inputSchema: z.object({ reason }), sideEffect: 'workspace-write', workspaceBoundary: 'required', timeoutMs: 10_000, audit: { category: 'memory', recordsAffectedPaths: true, recordsExitCode: false, externalDataTransfer: false }, networkAccess: false, describeTarget: () => '.forge/handoffs for the active task', describeEffect: () => 'Atomically write or update a human-readable task handoff.' }));
-  registry.register(definition({ ...base, name: 'task.process.start', purpose: 'Start one task step as a detached workspace-owned process with file-backed output.', inputSchema: z.object({ command: z.string().min(1).max(4_096).describe('Executable name only; put every argument in args.'), args: z.array(z.string().max(32_000)).max(500).default([]).describe('Arguments as separate array entries; use bash with ["-lc", "<script>"] for shell syntax.'), workingDirectory: z.string().max(4_096).optional().describe('Workspace-relative cwd. Omit to use the validated active workspace root.'), timeoutMs: z.number().int().min(100).max(86_400_000).default(600_000), environment: z.record(z.string()).optional(), environmentAllowlist: z.array(z.string()).max(100).default([]), networkProfile: z.enum(['offline', 'network', 'package-manager', 'git']).default('offline'), reason, expectedOutcome: z.string().min(1).max(2_000) }), sideEffect: 'process', workspaceBoundary: 'required', timeoutMs: 30_000, audit: { category: 'shell', recordsAffectedPaths: true, recordsExitCode: true, externalDataTransfer: false }, networkAccess: true, describeTarget: (input) => [input.command, ...(input.args ?? [])].map(quoteArgument).join(' '), describeEffect: (input) => `${input.expectedOutcome} Output will be stored under .forge/task-output and execution may outlive the current conversation. Network profile: ${input.networkProfile}.` }));
+  registry.register(definition({ ...base, name: 'task.process.start', purpose: 'Start one task step as a detached workspace-owned process with file-backed output.', inputSchema: z.object({ command: z.string().min(1).max(4_096).describe('Executable name only; put every argument in args.'), args: z.array(z.string().max(32_000)).max(500).default([]).describe('Arguments as separate array entries; use bash with ["-lc", "<script>"] for shell syntax.'), workingDirectory: filePath.optional().describe('Absolute or relative cwd. Relative paths start at the active workspace root.'), timeoutMs: z.number().int().min(100).max(86_400_000).default(600_000), environment: z.record(z.string()).optional(), environmentAllowlist: z.array(z.string()).max(100).default([]), networkProfile: z.enum(['offline', 'network', 'package-manager', 'git']).default('offline'), reason, expectedOutcome: z.string().min(1).max(2_000) }), sideEffect: 'process', workspaceBoundary: 'required', timeoutMs: 30_000, audit: { category: 'shell', recordsAffectedPaths: true, recordsExitCode: true, externalDataTransfer: false }, networkAccess: true, describeTarget: (input) => [input.command, ...(input.args ?? [])].map(quoteArgument).join(' '), describeEffect: (input) => `${input.expectedOutcome} Output will be stored under .forge/task-output and execution may outlive the current conversation. Network profile: ${input.networkProfile}.` }));
+  registry.register(definition({ ...base, name: 'task.redirect', purpose: 'Queue a natural-language instruction for the active task at its next safe continuation boundary.', inputSchema: z.object({ taskId: z.string().uuid(), instruction: z.string().min(1).max(4_000), reason }), sideEffect: 'workspace-write', workspaceBoundary: 'required', timeoutMs: 10_000, audit: { category: 'memory', recordsAffectedPaths: false, recordsExitCode: false, externalDataTransfer: false }, networkAccess: false, describeTarget: (input) => `task ${input.taskId}`, describeEffect: () => 'Persist a redirect instruction in task history until the running agent acknowledges delivery.' }));
   return registry;
 }
 
 export function quoteArgument(value: string): string { return /^[A-Za-z0-9_./:=+-]+$/.test(value) ? value : `'${value.replaceAll("'", "'\\''")}'`; }
 
 const SHELL_TOOL_NAMES = new Set(['shell.run', 'task.process.start']);
-const EXECUTABLE_ARGUMENT_ERROR = 'Executable and arguments must be separate: set command to the executable only and put each argument in args (for example, command: "hermes", args: ["acp", "--help"]). Use command: "bash", args: ["-lc", "<script>"] for shell operators, pipes, redirects, globbing, or substitutions.';
 
 interface NormalizedCommandLine { command: string; args: string[]; }
 
@@ -249,25 +311,58 @@ export function normalizeCommandLine(commandLine: string): NormalizedCommandLine
   finishToken();
   if (!args.length) throw new ToolValidationError('MALFORMED_ARGUMENTS', 'A non-empty executable is required.');
   if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(args[0])) return { command: 'bash', args: ['-lc', script] };
+  if (['cd', 'source', 'export', 'alias', 'unalias', 'set', 'unset', 'ulimit'].includes(args[0])) return { command: 'bash', args: ['-lc', script] };
   return { command: args[0], args: args.slice(1) };
 }
 
 /** Normalize only provider-facing shell calls; the executor receives canonical command + argv. */
 export function normalizeShellToolCall(call: ProviderToolCall): ProviderToolCall {
   if (!SHELL_TOOL_NAMES.has(call.name)) return call;
-  if (Array.isArray(call.arguments)) throw new ToolValidationError('MALFORMED_ARGUMENTS', `${EXECUTABLE_ARGUMENT_ERROR} Received a command array instead of the shell tool object.`);
+  if (typeof call.arguments === 'string') return normalizeShellToolCall({ ...call, arguments: { command: call.arguments } });
+  if (Array.isArray(call.arguments)) {
+    if (!call.arguments.length || !call.arguments.every((argument) => typeof argument === 'string')) throw new ToolValidationError('MALFORMED_ARGUMENTS', 'Shell command arrays must contain non-empty string arguments.');
+    return normalizeShellToolCall({ ...call, arguments: { command: call.arguments[0], args: call.arguments.slice(1) } });
+  }
   if (!call.arguments || typeof call.arguments !== 'object') return call;
   const argumentsValue = call.arguments as Record<string, unknown>;
-  if (Array.isArray(argumentsValue.command)) throw new ToolValidationError('MALFORMED_ARGUMENTS', `${EXECUTABLE_ARGUMENT_ERROR} The command field must be a string, not an array.`);
+  if (Array.isArray(argumentsValue.command)) {
+    if (!argumentsValue.command.length || !argumentsValue.command.every((argument) => typeof argument === 'string')) throw new ToolValidationError('MALFORMED_ARGUMENTS', 'Shell command arrays must contain non-empty string arguments.');
+    return normalizeShellToolCall({ ...call, arguments: { ...argumentsValue, command: argumentsValue.command[0], args: [...argumentsValue.command.slice(1), ...(Array.isArray(argumentsValue.args) ? argumentsValue.args : [])] } });
+  }
   if (typeof argumentsValue.command !== 'string') return call;
   const suppliedArgs = argumentsValue.args;
+  if (typeof suppliedArgs === 'string') return normalizeShellToolCall({ ...call, arguments: { ...argumentsValue, command: `${argumentsValue.command} ${suppliedArgs}`, args: [] } });
   if (suppliedArgs !== undefined && !Array.isArray(suppliedArgs)) return call;
   if (Array.isArray(suppliedArgs) && suppliedArgs.length > 0) {
-    if (/\s/.test(argumentsValue.command)) throw new ToolValidationError('MALFORMED_ARGUMENTS', EXECUTABLE_ARGUMENT_ERROR);
+    if (/\s/.test(argumentsValue.command)) {
+      const normalized = normalizeCommandLine(argumentsValue.command);
+      return { ...call, arguments: { ...argumentsValue, command: normalized.command, args: [...normalized.args, ...suppliedArgs] } };
+    }
     return call;
   }
   const normalized = normalizeCommandLine(argumentsValue.command);
   return { ...call, arguments: { ...argumentsValue, ...normalized } };
+}
+
+export function normalizeProviderToolCall(call: ProviderToolCall, userRequest = ''): ProviderToolCall {
+  const shellNormalized = normalizeShellToolCall(call);
+  if (!shellNormalized.arguments || typeof shellNormalized.arguments !== 'object' || Array.isArray(shellNormalized.arguments)) return shellNormalized;
+  const input = { ...(shellNormalized.arguments as Record<string, unknown>) };
+  if (['file.list', 'file.search'].includes(shellNormalized.name) && input.path === '') input.path = '.';
+  if (shellNormalized.name === 'file.read' && input.offset !== undefined && (input.startLine !== undefined || input.endLine !== undefined)) {
+    if (/\b(lines?|line numbers?|from line|through line)\b/i.test(userRequest)) delete input.offset;
+    else { delete input.startLine; delete input.endLine; }
+  }
+  return { ...shellNormalized, arguments: input };
+}
+
+function inferredNetworkProfile(command: string, args: readonly string[]): ShellRunInput['networkProfile'] {
+  const executable = path.basename(command).toLowerCase();
+  const action = args.find((argument) => !argument.startsWith('-'))?.toLowerCase();
+  if (['curl', 'wget', 'ssh', 'scp'].includes(executable)) return 'network';
+  if (['npm', 'npx', 'pnpm', 'yarn', 'bun'].includes(executable) && ['install', 'ci', 'add', 'update', 'publish', 'dlx', 'create'].includes(action ?? '')) return 'package-manager';
+  if (executable === 'git' && ['clone', 'fetch', 'pull', 'push', 'ls-remote'].includes(action ?? '')) return 'git';
+  return 'offline';
 }
 
 export function sanitizeToolData(value: unknown): unknown {
@@ -333,7 +428,14 @@ function inferExecutionReason(definition: ToolDefinition<any, any>, context: Too
 function enrichRuntimeArguments(argumentsValue: unknown, reasonValue: string, context: ToolRouterContext, toolName: string): unknown {
   if (!argumentsValue || typeof argumentsValue !== 'object' || Array.isArray(argumentsValue)) return argumentsValue;
   const { reason: _providerReason, taskContext: _providerTaskContext, originatingConversationId: _providerConversationId, auditId: _providerAuditId, stepId: _providerStepId, ...semanticArguments } = argumentsValue as Record<string, unknown>;
-  return { ...semanticArguments, reason: reasonValue, ...(toolName === 'task.create' ? { originatingConversationId: context.conversationId } : {}) };
+  const inferredProfile = SHELL_TOOL_NAMES.has(toolName) && typeof semanticArguments.command === 'string' ? inferredNetworkProfile(semanticArguments.command, Array.isArray(semanticArguments.args) ? semanticArguments.args : []) : 'offline';
+  const networkProfile = inferredProfile === 'offline' ? semanticArguments.networkProfile : inferredProfile;
+  const configuredTimeout = toolName === 'task.process.start' ? context.backgroundTaskTimeoutMs : context.processTimeoutMs;
+  const standardTimeout = toolName === 'task.process.start' ? 600_000 : 120_000;
+  const timeoutLimit = context.processMode === 'full-local-compute' ? configuredTimeout : Math.min(configuredTimeout ?? standardTimeout, standardTimeout);
+  const suppliedTimeout = typeof semanticArguments.timeoutMs === 'number' ? semanticArguments.timeoutMs : timeoutLimit;
+  const cappedTimeout = typeof timeoutLimit === 'number' && typeof suppliedTimeout === 'number' ? Math.min(suppliedTimeout, timeoutLimit) : undefined;
+  return { ...semanticArguments, ...(SHELL_TOOL_NAMES.has(toolName) && cappedTimeout !== undefined ? { timeoutMs: cappedTimeout } : {}), reason: reasonValue, ...(SHELL_TOOL_NAMES.has(toolName) && !semanticArguments.expectedOutcome ? { expectedOutcome: reasonValue } : {}), ...(SHELL_TOOL_NAMES.has(toolName) && networkProfile ? { networkProfile } : {}), ...(toolName === 'task.create' ? { originatingConversationId: context.conversationId } : {}) };
 }
 
 export class ToolRouter {
@@ -342,13 +444,21 @@ export class ToolRouter {
   private readonly controllers = new Map<string, AbortController>();
   private readonly executors = new Map<string, ToolExecutor>();
   private readonly workspaceRoots = new Map<string, string>();
+  private readonly requestPathPolicies = new Map<string, FilesystemPathPolicy>();
 
   constructor(private readonly dependencies: { git: GitService; github?: GitHubService; shell: ShellService; terminal?: { list(): Array<{ id: string; cwd: string; state: string; exitCode: number | null; recentOutput: string }> }; tasks?: { get(taskId: string): Promise<unknown>; create(draft: any): Promise<unknown>; resume(taskId: string): Promise<unknown>; pause(taskId: string, reason: string): Promise<unknown>; cancel(taskId: string, reason: string, trackingOnly: boolean): Promise<unknown>; checkpoint(taskId: string, input: any): Promise<unknown>; generateHandoff(taskId: string): Promise<unknown>; startBackground(taskId: string, stepId: string, input: ShellRunInput, toolRequestId: string): Promise<unknown> }; browser?: BrowserToolService; memories?: { create(entry: { type: 'document'; title?: string | null; content: string; metadata?: unknown }): Promise<{ id: string; createdAt: number; updatedAt: number }> }; web: WebService; audit: AuditStore; dirtyPaths: () => ReadonlySet<string> }) {
     this.registry = createToolRegistry(); this.installExecutors();
   }
 
   definitions(): ToolDefinition<any, any>[] { return this.registry.list(); }
-  providerDefinitions(): Array<{ name: string; description: string; parameters: Record<string, unknown>; sideEffects: string; networkAccess: boolean; cancellation: boolean; resultSemantics: string }> { return this.registry.list().filter((entry) => this.availability(entry.name).available).map((entry) => ({ name: entry.name, description: entry.purpose, parameters: modelVisibleToolSchema(zodToJsonSchema(entry.inputSchema, { target: 'openApi3' }) as Record<string, unknown>), sideEffects: entry.sideEffect, networkAccess: entry.networkAccess, cancellation: entry.cancellable, resultSemantics: 'Returns a structured, bounded result with success, affected paths, warnings, and recovery metadata when applicable.' })); }
+  capabilityCatalog(executionMode: ToolRouterContext['executionMode'] = 'controlled'): Array<{ name: string; purpose: string; category: string; sideEffect: string; available: boolean; unavailableReason?: string; registered: boolean; executorPresent: boolean; providerVisible: boolean; cancellable: boolean; networkAccess: boolean; inputSchema: Record<string, unknown> }> {
+    return this.registry.list().map((entry) => {
+      const availability = this.availability(entry.name);
+      const modeAllows = executionMode !== 'disabled' && (executionMode !== 'controlled' || ['read', 'read-network'].includes(entry.sideEffect));
+      return { name: entry.name, purpose: entry.purpose, category: entry.audit.category, sideEffect: entry.sideEffect, available: availability.available, unavailableReason: availability.reason, registered: true, executorPresent: this.executors.has(entry.name), providerVisible: modeAllows && availability.available, cancellable: entry.cancellable, networkAccess: entry.networkAccess, inputSchema: modelVisibleToolSchema(zodToJsonSchema(entry.inputSchema, { target: 'openApi3' }) as Record<string, unknown>) };
+    });
+  }
+    providerDefinitions(executionMode: ToolRouterContext['executionMode'] = 'controlled'): Array<{ name: string; description: string; parameters: Record<string, unknown>; sideEffects: string; networkAccess: boolean; cancellation: boolean; resultSemantics: string }> { if (executionMode === 'disabled') return []; return this.registry.list().filter((entry) => this.availability(entry.name).available && (executionMode !== 'controlled' || ['read', 'read-network'].includes(entry.sideEffect))).map((entry) => ({ name: entry.name, description: entry.purpose, parameters: modelVisibleToolSchema(zodToJsonSchema(entry.inputSchema, { target: 'openApi3' }) as Record<string, unknown>), sideEffects: entry.sideEffect, networkAccess: entry.networkAccess, cancellation: entry.cancellable, resultSemantics: 'Returns a structured, bounded result with success, affected paths, warnings, and recovery metadata when applicable.' })); }
   listRequests(workspaceId?: string): ToolRequest[] { return [...this.requests.values()].filter((request) => !workspaceId || request.workspaceId === workspaceId).sort((a, b) => b.requestedAt - a.requestedAt).map((request) => ({ ...request, input: sanitizeToolData(request.input) })); }
   requestById(id: string): ToolRequest | undefined { const request = this.requests.get(id); return request ? { ...request } : undefined; }
 
@@ -357,7 +467,7 @@ export class ToolRouter {
     const executionReason = definitionForContext ? inferExecutionReason(definitionForContext, context) : `Request ${call.name}`;
     let parsed: ReturnType<ToolRegistry['parse']>;
     try {
-      const normalizedCall = normalizeShellToolCall(call);
+      const normalizedCall = context.autoRepairToolArguments === false ? call : normalizeProviderToolCall(call, context.userRequest);
       const runtimeCall = { ...normalizedCall, arguments: enrichRuntimeArguments(normalizedCall.arguments, executionReason, context, normalizedCall.name) };
       parsed = this.registry.parse(runtimeCall);
     }
@@ -366,6 +476,12 @@ export class ToolRouter {
       throw error;
     }
     const { definition, input } = parsed;
+        const policyFailure = this.policyFailure(definition, input, context);
+        if (policyFailure) {
+          const error = new ToolValidationError('POLICY_FAILURE', policyFailure);
+          await this.auditValidationFailure(call, context, error);
+          throw error;
+        }
     const availability = this.availability(definition.name);
     if (!availability.available) {
       const error = new ToolValidationError('UNKNOWN_TOOL', `${definition.name} is not available: ${availability.reason ?? 'a required FORGE capability is unavailable.'}`);
@@ -375,7 +491,9 @@ export class ToolRouter {
     this.workspaceRoots.set(context.workspaceId, context.workspaceRoot);
     const now = Date.now();
     const requestId = call.id || randomUUID();
-    const prediction = await this.predict(definition.name, input, context.workspaceRoot);
+    const pathPolicy: FilesystemPathPolicy = { workspaceRoot: context.workspaceRoot, scope: context.filesystemScope ?? 'workspace', repositoryRoot: context.repositoryRoot, projectTreeRoot: context.projectTreeRoot };
+    // Prediction is advisory. A stale path or changed file must still produce an audited tool result.
+    const prediction = await this.predict(definition.name, input, pathPolicy).catch((): { paths: string[]; diff?: string; target?: string } => ({ paths: [] }));
     const request: ToolRequest = {
       id: requestId, workspaceId: context.workspaceId, conversationId: context.conversationId, modelId: context.modelId,
       toolName: definition.name, input,
@@ -387,6 +505,7 @@ export class ToolRouter {
       state: 'requested', requestedAt: now, updatedAt: now
     };
     this.requests.set(request.id, request);
+    this.requestPathPolicies.set(request.id, pathPolicy);
     const result = await this.execute(request.id, context);
     return { request: { ...request }, result };
   }
@@ -396,8 +515,22 @@ export class ToolRouter {
     if (request.state === 'requested') { request.state = 'cancelled'; request.updatedAt = Date.now(); await this.dependencies.audit.appendAction(this.record(request, 'cancelled', false, 0, 'Tool request cancelled before execution.', [])); return true; }
     if (request.state !== 'running') return false;
     this.controllers.get(requestId)?.abort();
-    if (request.toolName === 'shell.run') this.dependencies.shell.cancel(requestId);
+    if (SHELL_TOOL_NAMES.has(request.toolName)) this.dependencies.shell.cancel(requestId);
     return true;
+  }
+
+  async cancelAll(workspaceId: string): Promise<number> {
+    const active = [...this.requests.values()].filter((request) => request.workspaceId === workspaceId && ['requested', 'running'].includes(request.state));
+    let cancelled = 0;
+    for (const request of active) if (await this.cancel(request.id, { workspaceId } as ToolRouterContext)) cancelled += 1;
+    return cancelled;
+  }
+
+  async cancelTask(taskId: string): Promise<number> {
+    const active = [...this.requests.values()].filter((request) => request.executionContext.taskId === taskId && ['requested', 'running'].includes(request.state));
+    let cancelled = 0;
+    for (const request of active) if (await this.cancel(request.id, { workspaceId: request.workspaceId } as ToolRouterContext)) cancelled += 1;
+    return cancelled;
   }
 
   private async execute(requestId: string, _context: ToolRouterContext): Promise<ToolResult> {
@@ -413,11 +546,13 @@ export class ToolRouter {
       return result;
     } catch (error) {
       const durationMs = Date.now() - started; const cancelled = controller.signal.aborted;
-      const result: ToolResult = { requestId: request.id, toolName: request.toolName, success: false, affectedPaths: [], warnings: [], error: { code: cancelled ? 'CANCELLED' : 'EXECUTION_FAILED', message: error instanceof Error ? error.message : String(error) }, durationMs, cancelled };
+      const message = error instanceof Error ? error.message : String(error);
+      const errorCode = cancelled ? 'CANCELLED' : message.startsWith('SCOPE_FAILURE:') ? 'SCOPE_FAILURE' : 'EXECUTION_FAILED';
+      const result: ToolResult = { requestId: request.id, toolName: request.toolName, success: false, affectedPaths: [], warnings: [], error: { code: errorCode, message }, durationMs, cancelled };
       request.state = cancelled ? 'cancelled' : 'failed'; request.updatedAt = Date.now();
       await this.dependencies.audit.appendAction(this.record(request, cancelled ? 'cancelled' : 'failed', false, durationMs, result.error!.message, []));
       return result;
-    } finally { this.controllers.delete(request.id); }
+    } finally { this.controllers.delete(request.id); this.requestPathPolicies.delete(request.id); }
   }
 
   private record(request: ToolRequest, executionState: AuditRecord['executionState'], success: boolean, executionDurationMs: number, resultSummary: string, affectedPaths: string[], exitCode?: number | null, rollback?: ToolResult['rollback'], output?: unknown): AuditRecord {
@@ -443,10 +578,30 @@ export class ToolRouter {
     return { available: true };
   }
 
-  private async predict(name: string, input: any, root: string): Promise<{ paths: string[]; diff?: string; target?: string }> {
+  private policyFailure(definition: ToolDefinition<any, any>, input: any, context: ToolRouterContext): string | undefined {
+    if (context.executionMode === 'disabled') return 'POLICY_FAILURE: Tool execution is disabled in Settings.';
+    if (context.executionMode === 'controlled' && !['read', 'read-network'].includes(definition.sideEffect)) return 'POLICY_FAILURE: Controlled mode permits read-only capabilities. Select Allow All in Settings to authorize mutations, processes, or network writes.';
+    const network = context.networkAccess;
+    if (definition.sideEffect === 'read-network' || definition.sideEffect === 'write-network') {
+      if (definition.name.startsWith('github.') || ['git.pull', 'git.push'].includes(definition.name)) {
+        if (network && !network.git) return 'POLICY_FAILURE: Git network access is disabled in Settings.';
+      } else if (network && !network.web) return 'POLICY_FAILURE: Web network access is disabled in Settings.';
+    }
+    if (['shell.run', 'task.process.start'].includes(definition.name)) {
+      if (definition.name === 'task.process.start' && context.backgroundTasksEnabled === false) return 'POLICY_FAILURE: Background task processes are disabled in Settings.';
+      const inferred = typeof input.command === 'string' ? inferredNetworkProfile(input.command, Array.isArray(input.args) ? input.args : []) : 'offline';
+      const profile = inferred === 'offline' ? input.networkProfile ?? 'offline' : inferred;
+      if (network && profile === 'git' && !network.git) return 'POLICY_FAILURE: Git network access is disabled in Settings.';
+      if (network && profile === 'package-manager' && !network.packageManager) return 'POLICY_FAILURE: Package-manager network access is disabled in Settings.';
+      if (network && profile === 'network' && !network.general) return 'POLICY_FAILURE: General network access is disabled in Settings.';
+    }
+    return undefined;
+  }
+
+  private async predict(name: string, input: any, policy: FilesystemPathPolicy): Promise<{ paths: string[]; diff?: string; target?: string }> {
     if (name === 'file.create') return { paths: [input.path], diff: unifiedDiff(input.path, '', input.content) };
-    if (name === 'file.write') { const absolute = await resolveContainedPath(root, input.path); const existing = await readText(absolute); return { paths: [input.path], diff: unifiedDiff(input.path, existing.content, input.content) }; }
-    if (name === 'file.patch') { const absolute = await resolveContainedPath(root, input.path); const existing = await readText(absolute); const after = applyReplacement(existing.content, input.expected, input.replacement, input.replaceAll); return { paths: [input.path], diff: unifiedDiff(input.path, existing.content, after) }; }
+    if (name === 'file.write') { const absolute = await resolveScopedPath(policy, input.path); const existing = await readText(absolute); return { paths: [absolute], diff: unifiedDiff(absolute, existing.content, input.content), target: absolute }; }
+    if (name === 'file.patch') { const absolute = await resolveScopedPath(policy, input.path); const existing = await readText(absolute); const after = applyReplacement(existing.content, input.expected, input.replacement, input.replaceAll); return { paths: [absolute], diff: unifiedDiff(absolute, existing.content, after), target: absolute }; }
     if (['file.rename', 'file.move'].includes(name)) return { paths: [input.from, input.to] };
     if (name === 'directory.create' || name === 'file.delete') return { paths: [input.path] };
     if (name === 'git.stage' || name === 'git.unstage') { const status = await this.dependencies.git.status(); return { paths: input.files, target: `branch ${status.branch}: ${input.files.join(', ')}` }; }
@@ -457,31 +612,39 @@ export class ToolRouter {
 
   private installExecutors(): void {
     const ok = (output: unknown, affectedPaths: string[] = [], extra: Partial<ToolResult> = {}): any => ({ success: true, output: { success: true, ...output as object }, affectedPaths, warnings: [], ...extra });
+    this.executors.set('task.redirect', async (input) => {
+      if (!this.dependencies.tasks) throw new Error('Persistent task runtime is unavailable.');
+      const taskService = this.dependencies.tasks as typeof this.dependencies.tasks & { redirect(taskId: string, instruction: string): Promise<unknown> };
+      return ok({ task: await taskService.redirect(input.taskId, input.instruction) });
+    });
     const missing = (requestedPath: string): Record<string, unknown> => ({ missing: true, requestedPath, recovery: { action: 'restart-at-workspace-root', path: '.', nearestRequestedParent: path.dirname(requestedPath) || '.', instruction: 'List the workspace root, discover the real layout, and retry only with an observed path.' } });
     this.executors.set('file.list', async (input, request) => {
-      const requestedPath = input.path === '.' ? '.' : input.path; const root = await fs.realpath(this.root(request)); const absolute = await resolveContainedPath(root, requestedPath, true);
+      const requestedPath = input.path === '.' ? '.' : input.path; const root = await fs.realpath(this.root(request)); const absolute = await this.resolvePath(request, requestedPath, true);
       if (!await pathExists(absolute)) return ok({ ...missing(requestedPath), entries: [], truncated: false });
       const entries: Array<{ path: string; type: string; size: number }> = [];
+      const skipped: Array<{ path: string; error: string }> = [];
+      const scanLimit = input.offset + input.maxEntries + 1;
       const visit = async (current: string, depth: number): Promise<void> => {
+        if (entries.length >= scanLimit) return;
         let directory: Dirent[];
         try { directory = await fs.readdir(current, { withFileTypes: true }); }
-        catch (error) { if (skippableFileSystemError(error)) return; throw error; }
+        catch (error) { if (skippableFileSystemError(error)) { if (skipped.length < 100) skipped.push({ path: displayPath(root, current), error: String((error as NodeJS.ErrnoException).code) }); return; } throw error; }
         directory.sort((left, right) => left.name.localeCompare(right.name));
         for (const entry of directory) {
+          if (entries.length >= scanLimit) return;
           const child = path.join(current, entry.name);
-          if (skippedWorkspacePath(root, child)) continue;
           try {
             const stat = await fs.lstat(child);
-            entries.push({ path: path.relative(root, child), type: entry.isDirectory() ? 'directory' : entry.isSymbolicLink() ? 'symlink' : 'file', size: stat.size });
+            entries.push({ path: displayPath(root, child), type: entry.isDirectory() ? 'directory' : entry.isSymbolicLink() ? 'symlink' : 'file', size: stat.size });
             if (input.recursive && entry.isDirectory() && depth < input.maxDepth) await visit(child, depth + 1);
-          } catch (error) { if (!skippableFileSystemError(error)) throw error; }
+          } catch (error) { if (!skippableFileSystemError(error)) throw error; if (skipped.length < 100) skipped.push({ path: displayPath(root, child), error: String((error as NodeJS.ErrnoException).code) }); }
         }
       };
       await visit(absolute, 0); const page = entries.slice(input.offset, input.offset + input.maxEntries); const nextOffset = input.offset + page.length; const truncated = nextOffset < entries.length;
-      return ok({ entries: page, totalEntries: entries.length, truncated, continuation: truncated ? { offset: nextOffset, instruction: 'Call file.list again with the same path, recursion, and depth plus this offset.' } : undefined });
+      return ok({ entries: page, totalEntries: truncated ? undefined : entries.length, totalEntriesAtLeast: entries.length, skipped, truncated, continuation: truncated ? { offset: nextOffset, instruction: 'Call file.list again with the same path, recursion, and depth plus this offset.' } : undefined });
     });
     this.executors.set('file.read', async (input, request) => {
-      const absolute = await resolveContainedPath(this.root(request), input.path, true); if (!await pathExists(absolute)) return ok(missing(input.path));
+      const absolute = await this.resolvePath(request, input.path, true); if (!await pathExists(absolute)) return ok(missing(input.path));
       const stat = await fs.stat(absolute);
       if (!stat.isFile()) return ok({ path: input.path, unreadable: true, reason: 'not-a-file', recovery: { action: 'list-path', path: input.path, instruction: 'Use file.list for directories, then call file.read with an observed file path.' } });
       const data = await readText(absolute, MAX_RANGED_TEXT_BYTES);
@@ -494,52 +657,52 @@ export class ToolRouter {
       return ok({ path: input.path, content: returned, encoding: data.encoding, totalCharacters: content.length, totalLines, returnedRange: { offset: startOffset, length: returned.length, startLine: lineAt(startOffset), endLine: lineAt(Math.max(startOffset, maxEnd - 1)) }, truncated, continuation: truncated ? { offset: maxEnd, instruction: 'Call file.read again with this offset and the same maxCharacters.' } : undefined });
     });
     this.executors.set('file.read.binary', async (input, request) => {
-      const absolute = await resolveContainedPath(this.root(request), input.path);
+      const absolute = await this.resolvePath(request, input.path);
       const [buffer, stat] = await Promise.all([fs.readFile(absolute), fs.stat(absolute)]);
       if (!stat.isFile()) return ok({ path: input.path, unreadable: true, reason: 'not-a-file' });
       if (buffer.byteLength > input.maxBytes) throw new Error(`Binary file exceeds the requested ${input.maxBytes.toLocaleString()} byte limit.`);
       return ok({ path: input.path, encoding: 'base64', content: buffer.toString('base64'), byteLength: buffer.byteLength, mode: stat.mode });
     });
     this.executors.set('file.search', async (input, request, signal) => {
-      const requestedPath = input.path === '.' ? '.' : input.path; const root = await fs.realpath(this.root(request)); const absolute = await resolveContainedPath(root, requestedPath, true);
+      const requestedPath = input.path === '.' ? '.' : input.path; const root = await fs.realpath(this.root(request)); const absolute = await this.resolvePath(request, requestedPath, true);
       if (!await pathExists(absolute)) return ok({ ...missing(requestedPath), matches: [], truncated: false });
       const matches: Array<{ path: string; line: number; text: string }> = []; let matchOffset = 0; const query = input.caseSensitive ? input.query : input.query.toLowerCase();
+      const skipped: Array<{ path: string; error: string }> = [];
       const visit = async (current: string): Promise<void> => {
         if (signal.aborted || matches.length >= input.maxResults) return;
         let directory: Dirent[];
         try { directory = await fs.readdir(current, { withFileTypes: true }); }
-        catch (error) { if (skippableFileSystemError(error)) return; throw error; }
+        catch (error) { if (skippableFileSystemError(error)) { if (skipped.length < 100) skipped.push({ path: displayPath(root, current), error: String((error as NodeJS.ErrnoException).code) }); return; } throw error; }
         for (const entry of directory) {
           if (signal.aborted || matches.length >= input.maxResults) return;
           const child = path.join(current, entry.name);
-          if (skippedWorkspacePath(root, child)) continue;
           if (entry.isDirectory()) await visit(child);
           else if (entry.isFile()) {
             try {
               const data = await readText(child);
               for (const [index, line] of data.content.split(/\r?\n/).entries()) {
                 const haystack = input.caseSensitive ? line : line.toLowerCase();
-                if (haystack.includes(query)) { if (matchOffset >= input.offset) matches.push({ path: path.relative(root, child), line: index + 1, text: line.slice(0, 2_000) }); matchOffset += 1; }
+                if (haystack.includes(query)) { if (matchOffset >= input.offset) matches.push({ path: displayPath(root, child), line: index + 1, text: line.slice(0, 2_000) }); matchOffset += 1; }
                 if (matches.length >= input.maxResults) break;
               }
-            } catch { /* skip unsupported or unreadable files */ }
+            } catch (error) { if (skippableFileSystemError(error) && skipped.length < 100) skipped.push({ path: displayPath(root, child), error: String((error as NodeJS.ErrnoException).code) }); }
           }
         }
       };
       await visit(absolute); const truncated = matches.length >= input.maxResults;
-      return ok({ matches, truncated, totalOrMore: input.offset + matches.length + (truncated ? 1 : 0), continuation: truncated ? { offset: input.offset + matches.length, instruction: 'Call file.search again with the same query/path and this offset.' } : undefined });
+      return ok({ matches, skipped, truncated, totalOrMore: input.offset + matches.length + (truncated ? 1 : 0), continuation: truncated ? { offset: input.offset + matches.length, instruction: 'Call file.search again with the same query/path and this offset.' } : undefined });
     });
-    this.executors.set('file.create', async (input, request) => { this.assertNotDirty(input.path); const absolute = await resolveContainedPath(this.root(request), input.path, true); await fs.mkdir(path.dirname(absolute), { recursive: true }); await fs.writeFile(absolute, input.content, { flag: 'wx' }); return ok({ path: input.path }, [input.path], { diff: request.diff, rollback: { available: true, instructions: `Delete ${input.path} to undo this creation.` } }); });
-    for (const name of ['file.write', 'file.patch']) this.executors.set(name, async (input, request) => { this.assertNotDirty(input.path); const absolute = await resolveContainedPath(this.root(request), input.path); const original = await readText(absolute); const after = name === 'file.write' ? input.content : applyReplacement(original.content, input.expected, input.replacement, input.replaceAll); const backup = await backupPath(this.root(request), input.path); await fs.copyFile(absolute, backup); await atomicWrite(absolute, after, original.encoding, original.mode); return ok({ path: input.path }, [input.path], { diff: unifiedDiff(input.path, original.content, after), rollback: { available: true, backupPath: path.relative(this.root(request), backup).replaceAll('\\', '/'), instructions: `Restore the backup over ${input.path}.` } }); });
-    for (const name of ['file.rename', 'file.move']) this.executors.set(name, async (input, request) => { this.assertNotDirty(input.from); this.assertNotDirty(input.to); const source = await resolveContainedPath(this.root(request), input.from); const destination = await resolveContainedPath(this.root(request), input.to, true); await fs.access(destination).then(() => { throw new Error('Destination already exists.'); }).catch((error) => { if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return; throw error; }); await fs.mkdir(path.dirname(destination), { recursive: true }); await fs.rename(source, destination); return ok({}, [input.from, input.to], { rollback: { available: true, instructions: `Move ${input.to} back to ${input.from}.` } }); });
-    this.executors.set('directory.create', async (input, request) => { const absolute = await resolveContainedPath(this.root(request), input.path, true); await fs.mkdir(absolute, { recursive: false }); return ok({}, [input.path], { rollback: { available: true, instructions: `Remove the empty directory ${input.path}.` } }); });
-    this.executors.set('file.delete', async (input, request) => { this.assertNotDirty(input.path); const absolute = await resolveContainedPath(this.root(request), input.path); const backup = await backupPath(this.root(request), input.path); await fs.cp(absolute, backup, { recursive: true, errorOnExist: true }); await fs.rm(absolute, { recursive: true, force: false }); return ok({}, [input.path], { rollback: { available: true, backupPath: path.relative(this.root(request), backup).replaceAll('\\', '/'), instructions: `Restore the backup to ${input.path}.` } }); });
+    this.executors.set('file.create', async (input, request) => { this.assertNotDirty(input.path); const absolute = await this.resolvePath(request, input.path, true); await fs.mkdir(path.dirname(absolute), { recursive: true }); await fs.writeFile(absolute, input.content, { flag: 'wx' }); return ok({ path: absolute }, [absolute], { diff: request.diff, rollback: { available: true, instructions: `Delete ${absolute} to undo this creation.` } }); });
+    for (const name of ['file.write', 'file.patch']) this.executors.set(name, async (input, request) => { this.assertNotDirty(input.path); const absolute = await this.resolvePath(request, input.path); const original = await readText(absolute); const after = name === 'file.write' ? input.content : applyReplacement(original.content, input.expected, input.replacement, input.replaceAll); const backup = await backupPath(this.root(request), absolute); await fs.copyFile(absolute, backup); await atomicWrite(absolute, after, original.encoding, original.mode); return ok({ path: absolute }, [absolute], { diff: unifiedDiff(absolute, original.content, after), rollback: { available: true, backupPath: path.relative(this.root(request), backup).replaceAll('\\', '/'), instructions: `Restore the backup over ${absolute}.` } }); });
+    for (const name of ['file.rename', 'file.move']) this.executors.set(name, async (input, request) => { this.assertNotDirty(input.from); this.assertNotDirty(input.to); const source = await this.resolvePath(request, input.from); const destination = await this.resolvePath(request, input.to, true); await fs.access(destination).then(() => { throw new Error('Destination already exists.'); }).catch((error) => { if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return; throw error; }); await fs.mkdir(path.dirname(destination), { recursive: true }); await fs.rename(source, destination); return ok({}, [source, destination], { rollback: { available: true, instructions: `Move ${destination} back to ${source}.` } }); });
+    this.executors.set('directory.create', async (input, request) => { const absolute = await this.resolvePath(request, input.path, true); await fs.mkdir(absolute, { recursive: false }); return ok({}, [absolute], { rollback: { available: true, instructions: `Remove the empty directory ${absolute}.` } }); });
+    this.executors.set('file.delete', async (input, request) => { this.assertNotDirty(input.path); const absolute = await this.resolvePath(request, input.path); if (inside(absolute, await fs.realpath(this.root(request)))) throw new Error('Deleting the active workspace or one of its parent directories would make the rollback backup recursive. Delete a narrower path.'); const backup = await backupPath(this.root(request), absolute); await fs.cp(absolute, backup, { recursive: true, errorOnExist: true }); await fs.rm(absolute, { recursive: true, force: false }); return ok({}, [absolute], { rollback: { available: true, backupPath: path.relative(this.root(request), backup).replaceAll('\\', '/'), instructions: `Restore the backup to ${absolute}.` } }); });
     this.executors.set('terminal.read', async (input) => { if (!this.dependencies.terminal) throw new Error('Terminal evidence is unavailable.'); const sessions = this.dependencies.terminal.list().filter((session) => !input.sessionId || session.id === input.sessionId).map((session) => ({ id: session.id, cwd: session.cwd, state: session.state, exitCode: session.exitCode, recentOutput: session.recentOutput.slice(-(input.maxCharacters ?? 4_000)) })); return ok({ sessions }); });
     this.executors.set('git.status', async () => ok({ status: await this.dependencies.git.status() })); this.executors.set('git.diff', async (input) => ok({ diff: await this.dependencies.git.diff(input.staged) })); this.executors.set('git.log', async (input) => ok({ commits: await this.dependencies.git.log(input.limit) })); this.executors.set('git.branches', async () => ok({ branches: await this.dependencies.git.branches() }));
     this.executors.set('git.stage', async (input) => { await this.dependencies.git.stage(input.files); return ok({}, input.files); }); this.executors.set('git.unstage', async (input) => { await this.dependencies.git.unstage(input.files); return ok({}, input.files); });
     this.executors.set('git.commit', async (input) => { const status = await this.dependencies.git.status(); const staged = status.files.filter((file) => file.indexStatus !== ' ' && file.indexStatus !== '?').map((file) => file.path); if (!staged.length) throw new Error('No staged files are available to commit.'); const commit = await this.dependencies.git.commit(input.message); return ok({ commit, branch: status.branch, stagedFiles: staged }, staged); });
     this.executors.set('git.pull', async () => { const status = await this.dependencies.git.status(); if (status.files.length) throw new Error('Pull is blocked while the working tree is dirty.'); await this.dependencies.git.pull(); return ok({ branch: status.branch }); }); this.executors.set('git.push', async () => { const status = await this.dependencies.git.status(); await this.dependencies.git.push(); return ok({ branch: status.branch }); });
-    this.executors.set('shell.run', async (input: ShellRunInput, request) => { const output = await this.dependencies.shell.run(input, request.id); return ok(output, [], { exitCode: output.exitCode, truncated: output.truncated, cancelled: output.cancelled }); });
+    this.executors.set('shell.run', async (input: ShellRunInput, request) => { const workingDirectory = await this.resolvePath(request, input.workingDirectory ?? '.', false); const output = await this.dependencies.shell.run({ ...input, workingDirectory }, request.id, true); return { success: output.exitCode === 0 && !output.timedOut && !output.cancelled, output: { success: output.exitCode === 0 && !output.timedOut && !output.cancelled, ...output }, affectedPaths: [], warnings: [], exitCode: output.exitCode, truncated: output.truncated, cancelled: output.cancelled, ...(output.exitCode === 0 && !output.timedOut && !output.cancelled ? {} : { error: { code: output.timedOut ? 'TIMEOUT' : output.cancelled ? 'CANCELLED' : 'NONZERO_EXIT', message: `Command exited with code ${output.exitCode ?? 'unknown'}.` } }) }; });
     this.executors.set('web.search', async (input) => ok(await this.dependencies.web.search(input.query))); this.executors.set('web.fetch', async (input) => ok(await this.dependencies.web.fetch(input.url)));
     this.executors.set('browser.open', async (input) => {
       if (!this.dependencies.browser) throw new Error('The FORGE Browser is unavailable.');
@@ -581,10 +744,14 @@ export class ToolRouter {
     this.executors.set('task.cancel', async (input) => { if (!this.dependencies.tasks) throw new Error('Persistent task runtime is unavailable.'); return ok({ task: await this.dependencies.tasks.cancel(input.taskId, input.reason, input.trackingOnly) }); });
     this.executors.set('task.checkpoint', async (input, request) => { if (!this.dependencies.tasks) throw new Error('Persistent task runtime is unavailable.'); const { taskId, stepId } = request.executionContext; if (!taskId || !stepId) throw new Error('task.checkpoint requires an active persistent task step; FORGE supplies its IDs internally.'); return ok({ task: await this.dependencies.tasks.checkpoint(taskId, { ...input, stepId, auditReference: request.id }) }); });
     this.executors.set('task.handoff', async (_input, request) => { if (!this.dependencies.tasks) throw new Error('Persistent task runtime is unavailable.'); const taskId = request.executionContext.taskId; if (!taskId) throw new Error('task.handoff requires an active persistent task; FORGE supplies its ID internally.'); const handoff = await this.dependencies.tasks.generateHandoff(taskId) as { relativePath?: string }; return ok({ handoff }, handoff.relativePath ? [handoff.relativePath] : []); });
-    this.executors.set('task.process.start', async (input, request) => { if (!this.dependencies.tasks) throw new Error('Persistent task runtime is unavailable.'); const { taskId, stepId } = request.executionContext; if (!taskId || !stepId) throw new Error('task.process.start requires an active persistent task step; FORGE supplies its IDs internally.'); const processInput: ShellRunInput = { command: input.command, args: input.args, workingDirectory: input.workingDirectory, timeoutMs: input.timeoutMs, environment: input.environment, environmentAllowlist: input.environmentAllowlist, networkProfile: input.networkProfile, reason: input.reason, expectedOutcome: input.expectedOutcome }; const started = await this.dependencies.tasks.startBackground(taskId, stepId, processInput, request.id) as { process?: { outputPath?: string } }; return ok({ started }, started.process?.outputPath ? [started.process.outputPath] : []); });
+    this.executors.set('task.process.start', async (input, request) => { if (!this.dependencies.tasks) throw new Error('Persistent task runtime is unavailable.'); const { taskId, stepId } = request.executionContext; if (!taskId || !stepId) throw new Error('task.process.start requires an active persistent task step; FORGE supplies its IDs internally.'); const workingDirectory = await this.resolvePath(request, input.workingDirectory ?? '.', false); const processInput: ShellRunInput = { command: input.command, args: input.args, workingDirectory, timeoutMs: input.timeoutMs, environment: input.environment, environmentAllowlist: input.environmentAllowlist, networkProfile: input.networkProfile, reason: input.reason, expectedOutcome: input.expectedOutcome }; const started = await this.dependencies.tasks.startBackground(taskId, stepId, processInput, request.id) as { process?: { outputPath?: string } }; return ok({ started }, started.process?.outputPath ? [started.process.outputPath] : []); });
   }
 
   private root(request: ToolRequest): string { const root = this.workspaceRoots.get(request.workspaceId); if (!root) throw new Error('Workspace root is unavailable for this request.'); return root; }
+  private resolvePath(request: ToolRequest, requestedPath: string, allowMissing = false): Promise<string> {
+    const policy = this.requestPathPolicies.get(request.id) ?? { workspaceRoot: this.root(request), scope: 'workspace' as const };
+    return resolveScopedPath(policy, requestedPath, allowMissing);
+  }
   private assertNotDirty(relative: string): void { if (this.dependencies.dirtyPaths().has(relative)) throw new Error(`The editor has unsaved content for ${relative}; save or discard it before tool execution.`); }
 }
 

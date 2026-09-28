@@ -73,23 +73,37 @@ export interface BackgroundShellRunOutput { requestId: string; pid: number; outp
 
 export async function resolveWorkspacePath(workspaceRoot: string, requested?: string): Promise<string> {
   const selected = requested?.trim() || '.';
-  if (path.isAbsolute(selected)) throw new Error('Absolute paths require a separate, explicitly approved policy.');
+  if (selected.includes('\0')) throw new Error('Working directory may not contain null bytes.');
   let root: string;
   try { root = await fs.realpath(workspaceRoot); }
   catch (error) {
     if (error instanceof Error && 'code' in error && error.code === 'ENOENT') throw new Error(`Workspace root does not exist: ${workspaceRoot}`);
     throw error;
   }
-  const candidate = path.resolve(root, selected);
+  const expanded = selected === '~' ? os.homedir() : selected.startsWith(`~${path.sep}`) ? path.join(os.homedir(), selected.slice(2)) : selected;
+  const candidate = path.resolve(root, expanded);
   let resolved: string;
   try { resolved = await fs.realpath(candidate); }
   catch (error) {
     if (error instanceof Error && 'code' in error && error.code === 'ENOENT') throw new Error(`cwd does not exist: ${selected}`);
     throw error;
   }
-  if (resolved !== root && !resolved.startsWith(`${root}${path.sep}`)) throw new Error('Working directory escapes the active workspace.');
   const stat = await fs.stat(resolved);
   if (!stat.isDirectory()) throw new Error('Working directory must be a directory.');
+  return resolved;
+}
+
+async function resolveAuthorizedWorkingDirectory(workspaceRoot: string, requested?: string): Promise<string> {
+  const selected = requested?.trim() || workspaceRoot;
+  if (selected.includes('\0')) throw new Error('Working directory may not contain null bytes.');
+  const expanded = selected === '~' ? os.homedir() : selected.startsWith('~/') || selected.startsWith(`~${path.sep}`) ? path.join(os.homedir(), selected.slice(2)) : selected;
+  let resolved: string;
+  try { resolved = await fs.realpath(path.resolve(workspaceRoot, expanded)); }
+  catch (error) {
+    if (error instanceof Error && 'code' in error && error.code === 'ENOENT') throw new Error(`cwd does not exist: ${selected}`);
+    throw error;
+  }
+  if (!(await fs.stat(resolved)).isDirectory()) throw new Error('Working directory must be a directory.');
   return resolved;
 }
 
@@ -158,12 +172,12 @@ export class ShellService {
   private readonly running = new Map<string, ChildProcess>();
   constructor(private readonly workspaceRoot: () => string | null, private readonly outputLimit = 1_000_000) {}
 
-  async run(input: ShellRunInput, requestId: string = randomUUID()): Promise<ShellRunOutput> {
+  async run(input: ShellRunInput, requestId: string = randomUUID(), allowAuthorizedExternalCwd = false): Promise<ShellRunOutput> {
     const root = this.workspaceRoot();
     if (!root) throw new Error('Open a workspace before running a shell tool.');
     assertCanonicalExecutable(input.command, input.args);
     assertNetworkProfile(input);
-    const cwd = await resolveWorkspacePath(root, input.workingDirectory);
+    const cwd = allowAuthorizedExternalCwd ? await resolveAuthorizedWorkingDirectory(root, input.workingDirectory) : await resolveWorkspacePath(root, input.workingDirectory);
     const timeoutMs = Math.min(Math.max(input.timeoutMs, 100), 10 * 60_000);
     const environment = filteredEnvironment(input.environment, input.environmentAllowlist);
 
@@ -201,12 +215,12 @@ export class ShellService {
     });
   }
 
-  async startBackground(input: ShellRunInput, outputPath: string, requestId: string = randomUUID()): Promise<BackgroundShellRunOutput> {
+  async startBackground(input: ShellRunInput, outputPath: string, requestId: string = randomUUID(), allowAuthorizedExternalCwd = false): Promise<BackgroundShellRunOutput> {
     const root = this.workspaceRoot(); if (!root) throw new Error('Open a workspace before running a background shell task.');
     assertCanonicalExecutable(input.command, input.args);
     assertNetworkProfile(input);
     if (!outputPath || path.isAbsolute(outputPath) || outputPath.split(/[\\/]/).includes('..')) throw new Error('Background output path must be workspace-relative.');
-    const cwd = await resolveWorkspacePath(root, input.workingDirectory); const realRoot = await fs.realpath(root); const requestedOutput = path.resolve(root, outputPath);
+    const cwd = allowAuthorizedExternalCwd ? await resolveAuthorizedWorkingDirectory(root, input.workingDirectory) : await resolveWorkspacePath(root, input.workingDirectory); const realRoot = await fs.realpath(root); const requestedOutput = path.resolve(root, outputPath);
     if (requestedOutput === path.resolve(root) || !requestedOutput.startsWith(`${path.resolve(root)}${path.sep}`)) throw new Error('Background output path escapes the active workspace.');
     await fs.mkdir(path.dirname(requestedOutput), { recursive: true }); const realParent = await fs.realpath(path.dirname(requestedOutput));
     if (realParent !== realRoot && !realParent.startsWith(`${realRoot}${path.sep}`)) throw new Error('Background output path resolves outside the active workspace.');
@@ -249,7 +263,7 @@ export type TerminalState = 'running' | 'exited';
 export interface TerminalSessionInfo { id: string; cwd: string; pid: number; state: TerminalState; exitCode: number | null; createdAt: number; title: string; recentOutput: string; }
 export interface TerminalEvent { sessionId: string; type: 'output' | 'exit'; data?: string; exitCode?: number; }
 
-interface TerminalSession { info: TerminalSessionInfo; process: pty.IPty; workspaceRoot: string; canonicalWorkspaceRoot: string; }
+interface TerminalSession { info: TerminalSessionInfo; process: pty.IPty; workspaceRoot: string; }
 
 export class TerminalService {
   private readonly sessions = new Map<string, TerminalSession>();
@@ -259,13 +273,12 @@ export class TerminalService {
     const root = this.workspaceRoot();
     if (!root) throw new Error('Open a workspace before creating a terminal.');
     const cwd = await resolveWorkspacePath(root, requestedCwd);
-    const canonicalWorkspaceRoot = await fs.realpath(root);
     const id = requestedId ?? randomUUID();
     if (this.sessions.has(id)) throw new Error('Terminal session already exists.');
     const shell = defaultTerminalShell();
     const terminal = pty.spawn(shell, terminalSpawnArguments(), { name: 'xterm-256color', cols: Math.max(20, columns), rows: Math.max(5, rows), cwd, env: terminalEnvironment(shell) });
     const info: TerminalSessionInfo = { id, cwd, pid: terminal.pid, state: 'running', exitCode: null, createdAt: Date.now(), title: path.basename(cwd), recentOutput: '' };
-    const session = { info, process: terminal, workspaceRoot: root, canonicalWorkspaceRoot };
+    const session = { info, process: terminal, workspaceRoot: root };
     this.sessions.set(id, session);
     terminal.onData((data) => {
       if (this.sessions.get(id)?.process !== terminal) return;
@@ -289,7 +302,7 @@ export class TerminalService {
   }
   resize(id: string, columns: number, rows: number): void { this.required(id).process.resize(Math.max(20, columns), Math.max(5, rows)); }
   terminate(id: string): void { const session = this.required(id); if (session.info.state === 'running') session.process.kill(); }
-  async restart(id: string): Promise<TerminalSessionInfo> { const current = this.required(id); const relative = path.relative(current.canonicalWorkspaceRoot, current.info.cwd) || '.'; const { cols, rows } = current.process; this.sessions.delete(id); if (current.info.state === 'running') current.process.kill(); return this.create(relative, cols, rows, id); }
+  async restart(id: string): Promise<TerminalSessionInfo> { const current = this.required(id); const { cols, rows } = current.process; this.sessions.delete(id); if (current.info.state === 'running') current.process.kill(); return this.create(current.info.cwd, cols, rows, id); }
   remove(id: string): void { this.terminate(id); this.sessions.delete(id); }
   dispose(): void { for (const id of [...this.sessions.keys()]) this.remove(id); }
   private required(id: string): TerminalSession {

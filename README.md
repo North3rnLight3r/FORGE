@@ -34,7 +34,7 @@ files + docs + Git + tasks + memory + observations
       files · Git · shell · tasks · web
 ```
 
-Explicit tool results, current source, Git, and task/runtime evidence outrank historical memory. Optional semantic embeddings are off on a fresh install and act only as a discovery aid. A failed or unavailable embedding provider does not disable normal workspace intelligence or tool execution.
+Explicit tool results, current source, Git, and task/runtime evidence outrank historical memory. Semantic context and automatic indexing are enabled by default as discovery aids. A failed or unavailable embedding provider does not disable normal workspace intelligence or tool execution.
 
 Native FORGE is the active execution path. Hermes detection, endpoint checks, and skill metadata discovery are implemented, but Hermes remains a requested/fallback profile until a tested structured bridge routes every Hermes tool request through FORGE's ToolRouter.
 
@@ -83,7 +83,7 @@ The desktop includes:
 - FORGE Live loopback preview for static web workspaces;
 - optional semantic context and runtime diagnostics.
 
-The current autonomous tool runtime has no FORGE approval queue or session-grant layer. Registered, available calls with valid semantic arguments execute directly. Safety still comes from workspace containment, semantic schemas, exact argument handling, OS permissions, URL/network validation, timeouts, cancellation, atomic writes and rollback data, output bounds, secret redaction, loop-progress detection, and durable action records. Enable external web access or configure remote credentials only when you want those capabilities available.
+Settings provide Disabled, Controlled (read-only), and Allow All execution modes, plus Workspace, Repository, Project Tree, Home, and Full user-accessible filesystem scopes. Allow All is standing authorization within the selected filesystem/network scope. Agent file and shell paths are canonicalized and scope-checked; OS permissions, semantic schemas, URL/network validation, timeouts, cancellation, atomic writes and rollback data, output bounds, secret redaction, loop-progress detection, and durable action records remain in place. The Tooling view exposes the registered runtime catalog, schema runner, Stop All, and audit history. Read the [User Manual](UserManual.md) for plain-language agent workflows and policy configuration.
 
 ## Develop
 
@@ -113,6 +113,7 @@ npm run build
 | Architecture and ownership | [Architecture](docs/ARCHITECTURE.md) |
 | Current implementation | [Project Status](docs/PROJECT_STATUS.md) |
 | Agent capabilities | [Agent Tools](docs/AGENT_TOOLS.md) |
+| Tooling and execution policy | [Tool Security](docs/TOOL_SECURITY.md) |
 | Persistent tasks | [Persistent Tasks](docs/PERSISTENT_TASKS.md) |
 | Packaging and installation | [Packaging](docs/PACKAGING.md) |
 | Release procedure | [Releasing FORGE](RELEASING.md) |

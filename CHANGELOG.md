@@ -4,6 +4,12 @@
 
 ## Unreleased
 
+- Added persisted Disabled/Controlled/Allow All execution modes; filesystem scope selection from workspace through the user-accessible filesystem; independent network capabilities; process limits; background, argument-repair, and semantic-index settings.
+- Added policy-aware canonical path resolution for file and shell tools, including repository traversal, selected project trees, home/full scope, symlink resolution, scope-denial evidence, and deterministic file.read/file.list argument normalization.
+- Added a ToolRouter-derived capability catalog and schema-driven Run/Test interface, audited `tool.execute` IPC, Stop All, durable task redirect events, tracked background process cancellation, and policy-aware native recovery evidence.
+- Made semantic context and event-driven indexing default-on with visible indexing failures and one bounded automatic degraded-index rebuild when enabled.
+- Added `task.redirect` as a canonical registered task capability and replaced recursive task-step continuation with a state-driven advancement loop.
+- Recorded these changes in the user manual and architecture/tooling documentation; available verification and any remaining gaps are reported from the current worktree rather than inferred from prior release history.
 - Fixed the Intelligence layer so it reports the complete provider-neutral artifact packet instead of exposing only optional semantic-retrieval counters.
 - Replaced millisecond cache freshness with monotonic invalidation revisions so rapid file or memory changes cannot leave an older intelligence packet active.
 - Added event-correlated agent, tool, and durable-task telemetry with completion visibility for fast operations.

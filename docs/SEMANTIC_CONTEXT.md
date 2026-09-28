@@ -1,6 +1,6 @@
 # Optional Semantic Discovery
 
-FORGE `2.5.0-beta` retains the repaired semantic embeddings as an optional discovery assistant. They are off on fresh installs and never replace current workspace tools or deterministic context.
+FORGE `2.5.0-beta` keeps semantic embeddings as a discovery assistant, enabled by default unless the user opts out. A reachable configured embedding provider is required to create vectors. Semantic results never replace current workspace tools or deterministic context.
 
 ## Authority and routing
 
@@ -24,12 +24,12 @@ Results are deduplicated by source path, content hash, overlapping range, and ne
 
 ## Index and memory behavior
 
-The workspace SQLite database stores revisioned chunks and Float32 vector blobs. Existing JSON vectors migrate in place. Rebuild writes are grouped into one sql.js persistence export, files are embedded in bounded groups of 32 with embedding batches of 8, and unchanged chunks are reused. File-watch updates are debounced and reindex only changed paths; task and durable-memory changes refresh only durable sources.
+The workspace SQLite database stores revisioned chunks and Float32 vector blobs. Existing JSON vectors migrate in place. Rebuild writes are grouped into one sql.js persistence export, files are embedded in bounded groups of 32 with embedding batches of 8, and unchanged chunks are reused. Workspace open indexes or verifies the current workspace; file-watch updates are debounced and reindex only changed paths; task and durable-memory changes refresh only durable sources. Auto Index controls those event-driven updates; Auto Repair performs one bounded rebuild after a degraded or rebuild-required result and publishes failures as runtime events.
 
 The default endpoint is Ollama's OpenAI-compatible loopback API (`http://127.0.0.1:11434/v1`) with `qwen3-embedding:0.6b`. Embedding requests are serialized, use bounded timeouts, and share one model session across a rebuild. For local Ollama, FORGE sends an immediate unload at the end of each query, validation, or indexing session so the model does not remain resident while FORGE is idle.
 
 ## Failure behavior
 
-Provider or indexing failure marks semantic health degraded and injects no cached partial result. Native FORGE, Hermes selection, deterministic workspace context, durable tasks/memory, and ToolRouter continue without semantic context. Enabling or rebuilding embeddings is never required for application startup or normal workspace tools.
+Provider or indexing failure marks semantic health degraded, publishes an error event, and injects no cached partial result. Native FORGE, Hermes selection, deterministic workspace context, durable tasks/memory, and ToolRouter continue without semantic context. Semantic indexing is not required for application startup or normal workspace tools.
 
 Run `npm run profile:semantic-memory` with local Ollama available to reproduce the 66-record rebuild, query, unload, direct-workflow, and repeated-cycle memory measurements. `FORGE_PROFILE_ITERATIONS` controls repeated cycles (1–10).

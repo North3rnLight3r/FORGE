@@ -28,13 +28,13 @@ GitHub username/token settings support authenticated Git operations and configur
 
 | Setting | Default |
 | --- | --- |
-| Enabled | `false` on a fresh install |
+| Enabled | `true` unless explicitly disabled |
 | Provider | OpenAI-compatible |
 | Base URL | `http://127.0.0.1:11434/v1` |
 | Model | `qwen3-embedding:0.6b` |
 | Context budget | `32000` tokens; allowed range `4000`–`128000` |
 
-Environment fallbacks are `FORGE_EMBEDDING_BASE_URL`, `FORGE_EMBEDDING_MODEL`, and `FORGE_EMBEDDING_API_KEY`. Enabling embeddings does not make them authoritative: current source, Git, tasks, and explicit tool evidence remain higher priority. Failure falls back to non-semantic context.
+Environment fallbacks are `FORGE_EMBEDDING_BASE_URL`, `FORGE_EMBEDDING_MODEL`, and `FORGE_EMBEDDING_API_KEY`. Enabling embeddings does not make them authoritative: current source, Git, tasks, and explicit tool evidence remain higher priority. Index refresh runs on workspace/file/task/memory changes while Auto Index is enabled; failures are reported and Auto Repair can attempt one bounded rebuild.
 
 Use **Refresh provider models**, **Validate embedding model**, and **Rebuild semantic index** after changing the endpoint or model.
 
@@ -56,9 +56,9 @@ Legacy `preview` values normalize to `beta`. Both channels reject equal versions
 
 ## Tool execution
 
-There are no stored tool approvals or session permissions in the current runtime. Tool definitions declare semantic inputs, side effects, workspace relationship, timeouts, audit behavior, network capability, and result bounds. A valid call to an available tool executes with the FORGE process's OS permissions and is recorded with execution state, duration, sanitized input, result summary, affected paths, exit code, and rollback metadata when applicable.
+**Settings → Tooling and autonomy** stores Disabled, Controlled, or Allow All execution; Workspace, Repository, Project Tree, Home, or Full user-accessible filesystem scope; separate Web, Git, Package Manager, and General Network capabilities; process mode/timeouts; background-task, continuation, and argument-repair preferences; and auto-index/repair toggles. Controlled allows reads; Allow All authorizes mutations/processes inside selected scopes without repeated prompts. OS account permissions remain authoritative.
 
-Control capability availability through application settings, configured credentials/services, the active workspace, and OS permissions. Agent Actions provides cancellation and history, not an authorization queue.
+Tool definitions declare semantic inputs, side effects, scope, timeouts, audit behavior, network capability, cancellation, and result bounds. The Tooling panel reads the live registry catalog, shows unavailable reasons and schemas, runs capabilities through the audited ToolRouter, supports cancellation/Stop All, and displays persistent action history.
 
 ## Files not to commit
 

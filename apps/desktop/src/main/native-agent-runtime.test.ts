@@ -64,18 +64,18 @@ describe('native agent tool routing', () => {
     expect(() => assertToolIdentity({ ...request, conversationId: 'c2cff4f7-f41f-445e-b6f5-8b9ef5d55051' }, undefined, conversationId)).toThrow(/conversation mismatch/i);
   });
 
-  it('turns workspace path-policy failures into actionable recovery without hiding available tools', () => {
+  it('explains configured filesystem scope without hiding available tools', () => {
     const tools = new Set(['file.list', 'file.read', 'shell.run', 'terminal.read', 'browser.read']);
     const guidance = runtimeToolRecoveryGuidance('file.list', 'Path must be workspace-relative and may not traverse upward.', tools);
     expect(guidance).toContain('Runtime tool catalog:');
     expect(guidance).toContain('shell.run');
-    expect(guidance).toContain('workspace-scoped');
-    expect(guidance).toContain('Do not retry them with absolute paths');
+    expect(guidance).toContain('when permitted by the configured filesystem scope');
+    expect(runtimeToolRecoveryGuidance('file.read', 'SCOPE_FAILURE: target is outside the configured workspace scope', tools)).toContain('broader scope to select in Settings');
   });
 
   it('treats permission-denied scans as skippable rather than a reason to mutate ownership', () => {
     const guidance = runtimeToolRecoveryGuidance('file.list', "EACCES: permission denied, scandir '/home/user/.local/share/containers/storage/overlay/layer'", new Set(['file.list', 'shell.run']));
-    expect(guidance).toMatch(/skippable evidence/i);
+    expect(guidance).toMatch(/report unreadable paths/i);
     expect(guidance).toMatch(/Do not chmod\/chown/i);
   });
 });

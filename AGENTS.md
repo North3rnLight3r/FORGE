@@ -34,27 +34,25 @@ A persisted task never grants permanent execution permission. Each executable st
 
 The AI may request tools, but it does not execute them directly.
 
-Every tool call passes through the FORGE tool router, policy engine, approval system, executor, and audit log. A provider-native tool call or validated structured-response fallback is only a request. Unknown names, malformed arguments, and malformed provider output are rejected before authorization. The model cannot construct IPC channels or receive raw Node.js, filesystem, Git, shell, credential, or network APIs.
+Every tool call passes through the FORGE tool registry, validation, executor, and audit log. A provider-native tool call or validated structured-response fallback is a request. FORGE normalizes common command forms and supplies runtime metadata so ordinary language prompts do not need special syntax. Unknown names and arguments that cannot be normalized are rejected and reported for recovery. The model cannot construct IPC channels or receive raw Node.js, filesystem, Git, shell, credential, or network APIs.
 
 The execution rule is permanent:
 
-> The model requests an action. FORGE validates, authorizes, executes, logs, and returns the result.
+> The model requests an action. FORGE validates, executes, logs, and returns the result.
 
 The model must never claim an action succeeded until FORGE returns a successful result. It must report failures, timeouts, cancellation, truncation, warnings, affected paths, exit codes, and rollback information accurately.
 
-## 🔐 Approval contract
+## 🔐 Prompt authority
 
-- Tier 0 read-only workspace and Git inspection may run automatically when tools are enabled.
-- Tier 1 reversible changes require Run once approval unless an exact workspace/tool/scope session permission is active. Session permissions expire within one hour and are cleared when the workspace changes.
-- Tier 2 destructive, executable, remote, credential, or irreversible actions always require a new explicit approval. There is no global allow-everything permission.
+An ordinary user prompt expresses the requested outcome; the persisted execution mode remains authoritative. Allow All is standing authorization for registered capabilities within the selected filesystem and network scopes without per-call approval. Controlled permits read-only operations; Disabled permits none. The agent may invoke advertised tools without a persistent task or tool name in the prompt and should continue through useful inspect, act, and verify steps while the request remains unfinished.
 
-The agent must never silently create, modify, move, rename, overwrite, delete, stage, unstage, commit, pull, push, run a command, install software, contact an external service, alter credentials, or publish a release. It must provide a truthful reason and expected effect. FORGE shows the exact command, target, working directory, branch or files, network use, external-data disclosure, and generated diff when applicable.
+Every action must retain a truthful reason, expected effect, and audited outcome. FORGE records the command, target, working directory, branch or files, network use, external-data disclosure, and generated diff when applicable. Operating-system permissions and service credentials still apply; the app cannot grant itself macOS Full Disk Access or administrator identity.
 
 ## 🗂️ Files, shell, Git, and web boundaries
 
-Workspace paths are relative to the active workspace. FORGE rejects absolute paths through normal tools, traversal, and symlink escapes. File writes are atomic, prefer targeted patches, refuse paths with unsaved editor content, and create rollback data when replacing or deleting existing content.
+File tools accept relative, upward-traversing, home, and absolute paths only when allowed by the selected Workspace, Repository, Project Tree, Home, or Full user-accessible filesystem scope. Resolve symlinks before policy checks and record canonical targets. They list and search hidden files. File writes are atomic, prefer targeted patches, refuse paths with unsaved editor content, and create workspace-owned rollback data when replacing or deleting existing content. The project folder remains the source of truth for workspace intelligence and persistent tasks, even when a tool acts elsewhere.
 
-Agent shell requests use an executable plus argument array, a workspace-contained working directory, a small environment allowlist, output and time limits, cancellation, and process-tree termination. User-entered integrated-terminal input is visually separate from agent-requested `shell.run` actions. Terminal output is not automatically indexed as memory.
+Agent shell requests accept common command forms and normalize them to an executable plus argument array. Their working directory uses the same configured filesystem scope as file tools. Environment filtering, output and time limits, cancellation, and process-tree termination remain in place. User-entered integrated-terminal input is visually separate from agent-requested `shell.run` actions. Terminal output is not automatically indexed as memory.
 
 Git tools use the existing Git service. Tokens are never embedded in URLs or output. Commits operate on the exact staged set; pull warns or stops on a dirty tree; force push is not implemented.
 
@@ -64,7 +62,7 @@ Web tools are disabled until configured. They display the exact query or URL, bl
 
 API keys and GitHub tokens remain encrypted with Electron `safeStorage` and macOS Keychain. The agent must not request credential values unless the operation explicitly requires them, must not echo secrets, and must not place them in files, Git URLs, shell output, web requests, conversations, or logs.
 
-Every tool decision is recorded per workspace with timestamp, conversation, model, tool, sanitized input, risk tier, approval decision, duration, outcome, affected paths, exit code, and rollback metadata where applicable. API keys, tokens, authorization headers, credential values, and decrypted Keychain data are redacted and must never be logged.
+Every tool decision is recorded per workspace with timestamp, conversation, model, tool, sanitized input, duration, outcome, affected paths, exit code, and rollback metadata where applicable. API keys, tokens, authorization headers, credential values, and decrypted Keychain data are redacted and must never be logged.
 
 Tool-derived evidence is bounded before it re-enters model context and is labeled separately from Workspace Documentation, Source Code, Git, Durable Memory, Terminal, External Web, and Model Inference. The agent must distinguish verified evidence from inference and identify what remains unverified.
 

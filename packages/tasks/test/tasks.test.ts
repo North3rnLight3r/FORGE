@@ -35,6 +35,20 @@ describe('workspace-owned persistent tasks', () => {
     const reopened = new StorageService(); await reopened.init(root); const replacement = new TaskRuntime({ storage: reopened, workspaceRoot: () => root }); expect((await replacement.get(task.id)).title).toBe('Persistent Task Verification'); await reopened.close();
   });
 
+  it('persists redirected instructions until the active runner acknowledges delivery', async () => {
+    const { root, storage, tasks } = await runtime();
+    const task = await tasks.create({ title: 'Redirectable task', taskType: 'maintenance', resumeInstructions: 'Continue from verified state.', steps: [{ id: 'work', name: 'Work', purpose: 'Make the requested change.', riskTier: 1, requiredTool: 'file.write', verificationCriteria: ['Change verified'] }] });
+    await tasks.redirect(task.id, 'Skip the generated bundle and inspect the tests first.');
+    expect(await tasks.pendingRedirects(task.id)).toMatchObject([{ instruction: 'Skip the generated bundle and inspect the tests first.' }]);
+    await storage.close();
+    const reopened = new StorageService(); await reopened.init(root); const resumed = new TaskRuntime({ storage: reopened, workspaceRoot: () => root });
+    const redirects = await resumed.pendingRedirects(task.id);
+    expect(redirects).toHaveLength(1);
+    await resumed.acknowledgeRedirects(task.id, redirects.map((entry) => entry.eventId));
+    expect(await resumed.pendingRedirects(task.id)).toEqual([]);
+    await reopened.close();
+  });
+
   it('reconciles stale processes and accepts verified remote completion without repeating work', async () => {
     const { storage, tasks } = await runtime(); const task = await tasks.create({ title: 'Upload', taskType: 'release', resumeInstructions: 'Verify remote state before retry.', steps: [{ id: 'upload', name: 'Upload DMG', purpose: 'Upload one asset.', riskTier: 2, requiredTool: 'web.open', verificationCriteria: ['Remote SHA matches'] }, { id: 'zip', name: 'Upload ZIP', purpose: 'Upload next asset.', riskTier: 2, requiredTool: 'web.open', verificationCriteria: ['Remote SHA matches'], dependencies: ['upload'] }] });
     await storage.setTaskStepState(task.id, 'upload', 'running', { summary: 'Upload process started.', externalProcessId: 99123, incrementAttempts: true });
@@ -52,7 +66,7 @@ describe('workspace-owned persistent tasks', () => {
   it('never silently kills an active process when task tracking is cancelled', async () => {
     const { storage, tasks } = await runtime(); const task = await tasks.create({ title: 'Background build', taskType: 'build', resumeInstructions: 'Inspect PID and output.', steps: [{ id: 'build', name: 'Build', purpose: 'Run build.', riskTier: 2, requiredTool: 'shell.run', verificationCriteria: ['Exit zero'] }] });
     await storage.setTaskStepState(task.id, 'build', 'running', { summary: 'Build running.', externalProcessId: 42 }); await storage.updateTaskReality(task.id, { processIds: [42] });
-    await expect(tasks.cancel(task.id, 'Stop', false)).rejects.toThrow(/will not silently kill/); expect((await tasks.cancel(task.id, 'Stop tracking', true)).status).toBe('cancelled'); await storage.close();
+    await expect(tasks.cancel(task.id, 'Stop', false)).rejects.toThrow(/could not be cancelled through its tracked shell request/); expect((await tasks.cancel(task.id, 'Stop tracking', true)).status).toBe('cancelled'); await storage.close();
   });
 
   it('starts a Tier 2 background step through the injected shell runtime and persists its PID', async () => {

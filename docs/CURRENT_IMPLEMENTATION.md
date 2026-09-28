@@ -1,6 +1,6 @@
 # Current FORGE Implementation
 
-This is a source-oriented inventory for the `2.5.0-beta` line, last reconciled on 2026-08-31.
+This is a source-oriented inventory for the `2.5.0-beta` line, reconciled on 2026-09-28 against the current working tree.
 
 ## Desktop boundary
 
@@ -17,16 +17,16 @@ This is a source-oriented inventory for the `2.5.0-beta` line, last reconciled o
 
 - `@forge/intelligence` assembles provider-neutral, bounded, authority-ordered context.
 - Current source/Git/task/tool evidence outranks semantic and historical memory.
-- Semantic embeddings are optional and off by default; failure injects no semantic evidence and leaves ordinary tools operational.
+- Semantic embeddings and event-driven indexing default on; a configured provider is required for vectors, and failure injects no semantic evidence while leaving ordinary tools operational.
 - Native FORGE runs the current agent loop. It is bounded by elapsed runtime and suppresses only redundant identical calls against unchanged observed workspace state.
 - `@forge/agent-runtime` detects Hermes and skills but keeps Native FORGE active without a compatible structured execution bridge.
 - The shared renderer uses a bounded Three.js aurora, bundled typography, animated glass surfaces, opt-out sounds, reduced-motion handling, and typed live context/memory/process telemetry without granting Node.js authority to the renderer.
 
 ## Tools
 
-`@forge/tool-runtime` owns definitions/contracts, schema validation, execution context, cancellation, and result shapes. `@forge/agent-tools` supplies implementations for contained files, Git, shell/processes, terminal evidence, Browser/web, GitHub, tasks, and durable memory.
+`@forge/tool-runtime` owns definitions/contracts, schema validation, execution context, cancellation, and result shapes. `@forge/agent-tools` supplies implementations for policy-scoped files/shell paths, Git, terminal evidence, Browser/web, GitHub, tasks, and durable memory. Settings persist Disabled/Controlled/Allow All, filesystem/network scopes, process timeouts, and indexing behavior. Tooling renders the live registry catalog and generic schema runner.
 
-Current execution is autonomous: no policy/approval queue or session-grant layer exists. Audit rows use execution states such as requested, running, succeeded, failed, cancelled, and validation-failed.
+The retired per-call approval queue/session-grant layer remains absent; persisted mode/scope policy is enforced at ToolRouter. Audit rows use execution states such as requested, running, succeeded, failed, cancelled, and validation-failed. Task redirects persist as task events until consumed at a safe agent continuation boundary.
 
 ## Platform services
 

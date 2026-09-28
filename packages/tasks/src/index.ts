@@ -14,7 +14,7 @@ export interface TaskRuntimeDependencies {
   storage: TaskStore;
   workspaceRoot: () => string | null;
   git?: { status(): Promise<GitStatus> };
-  shell?: { startBackground(input: ShellRunInput, outputPath: string, requestId?: string): Promise<BackgroundShellRunOutput> };
+  shell?: { startBackground(input: ShellRunInput, outputPath: string, requestId?: string, allowAuthorizedExternalCwd?: boolean): Promise<BackgroundShellRunOutput>; cancel?(requestId: string): boolean };
   processState?: (pid: number) => Promise<'running' | 'exited' | 'missing'>;
   now?: () => number;
 }
@@ -124,12 +124,44 @@ export class TaskRuntime {
     return this.dependencies.storage.setPersistentTaskState(taskId, 'paused', { summary: `Paused: ${reason}`, eventType: 'task.paused', interruptionReason: reason, currentStepId: task.currentStepId, resumabilityState: 'reconcile-required' });
   }
 
+  async redirect(taskId: string, instruction: string): Promise<Task> {
+    const normalized = instruction.trim();
+    if (!normalized || normalized.length > 4_000) throw new Error('A redirect instruction between 1 and 4,000 characters is required.');
+    const task = await this.get(taskId);
+    if (['completed', 'cancelled'].includes(task.status)) throw new Error('Completed or cancelled tasks cannot receive redirect instructions.');
+    await this.dependencies.storage.appendTaskEvent(taskId, { type: 'task.redirected', summary: `Redirect instruction queued: ${normalized.slice(0, 240)}`, details: { instruction: normalized } });
+    return this.get(taskId);
+  }
+
+  async pendingRedirects(taskId: string): Promise<Array<{ eventId: string; instruction: string }>> {
+    const task = await this.get(taskId);
+    const consumed = new Set(task.events.filter((event) => event.type === 'task.redirect.consumed' && typeof (event.details as { eventId?: unknown } | undefined)?.eventId === 'string').map((event) => (event.details as { eventId: string }).eventId));
+    return task.events.filter((event) => event.type === 'task.redirected' && !consumed.has(event.id) && typeof (event.details as { instruction?: unknown } | undefined)?.instruction === 'string').map((event) => ({ eventId: event.id, instruction: (event.details as { instruction: string }).instruction }));
+  }
+
+  async acknowledgeRedirects(taskId: string, eventIds: string[]): Promise<void> {
+    const available = new Set((await this.pendingRedirects(taskId)).map((entry) => entry.eventId));
+    for (const eventId of eventIds) if (available.has(eventId)) await this.dependencies.storage.appendTaskEvent(taskId, { type: 'task.redirect.consumed', summary: 'Queued redirect instruction was delivered to the active agent.', details: { eventId } });
+  }
+
   async cancel(taskId: string, reason: string, trackingOnly: boolean): Promise<Task> {
     if (!reason.trim() || reason.length > 4_000) throw new Error('A bounded cancellation reason is required.');
-    const task = await this.get(taskId); const activePids = [...new Set([...task.processIds, ...task.steps.filter((step) => step.status === 'running' && step.externalProcessId).map((step) => step.externalProcessId!)])];
-    if (activePids.length && !trackingOnly) throw new Error(`Task cancellation will not silently kill active process IDs: ${activePids.join(', ')}. Cancel tracking only or terminate the exact process through a tool.`);
-    const summary = activePids.length ? `FORGE tracking cancelled; external process IDs may still be active: ${activePids.join(', ')}.` : `Task cancelled: ${reason}`;
+    const task = await this.get(taskId); const activeSteps = task.steps.filter((step) => step.status === 'running' && step.externalProcessId); const activePids = [...new Set(activeSteps.map((step) => step.externalProcessId!))];
+    if (activePids.length && !trackingOnly) {
+      for (const step of activeSteps) {
+        const requestId = step.auditReferences.at(-1);
+        if (!requestId || !this.dependencies.shell?.cancel?.(requestId)) throw new Error(`Task process ${step.externalProcessId} could not be cancelled through its tracked shell request ${requestId ?? '(missing)'}. Task state was not changed.`);
+      }
+    }
+    const summary = activePids.length && trackingOnly ? `FORGE tracking cancelled; external process IDs may still be active: ${activePids.join(', ')}.` : `Task cancelled: ${reason}`;
     return this.dependencies.storage.setPersistentTaskState(taskId, 'cancelled', { summary, eventType: 'task.cancelled', interruptionReason: reason, currentStepId: task.currentStepId, resumabilityState: 'not-resumable', details: { trackingOnly, activePids } });
+  }
+
+  async stopAll(): Promise<number> {
+    const active = (await this.list()).filter((task) => !['completed', 'cancelled'].includes(task.status));
+    let cancelled = 0;
+    for (const task of active) { await this.cancel(task.id, 'Stop All was requested from FORGE.', false); cancelled += 1; }
+    return cancelled;
   }
 
   async retryStep(taskId: string, stepId: string): Promise<Task> {
@@ -179,7 +211,7 @@ export class TaskRuntime {
     const outputPath = path.join('.forge', 'task-output', taskId, `${slug(step.name)}.log`);
     await this.dependencies.storage.setTaskStepState(taskId, stepId, 'running', { summary: `${step.name} is starting as a workspace-owned background process.`, incrementAttempts: true, auditReference: toolRequestId, eventType: 'step.started' });
     try {
-      const process = await this.dependencies.shell.startBackground(input, outputPath, toolRequestId);
+      const process = await this.dependencies.shell.startBackground(input, outputPath, toolRequestId, true);
       await this.dependencies.storage.setTaskStepState(taskId, stepId, 'running', { summary: `${step.name} is running as process ${process.pid}.`, externalProcessId: process.pid, outputPath, auditReference: toolRequestId, eventType: 'external.process.detected' });
       await this.dependencies.storage.updateTaskReality(taskId, { processIds: [...new Set([...task.processIds, process.pid])] });
       return { task: await this.get(taskId), process };

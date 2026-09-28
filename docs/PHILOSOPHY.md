@@ -50,7 +50,7 @@ This creates an important distinction:
 
 FORGE should protect the workspace without preventing legitimate work.
 
-The human controls authority by choosing the workspace, configuring credentials and external capabilities, setting operating-system permissions, and deciding when FORGE runs. The current autonomous runtime does not maintain a second approval queue or session-grant layer inside FORGE.
+The human controls authority by choosing execution mode, filesystem scope, network capabilities, workspace, credentials, operating-system permissions, and when FORGE runs. The runtime uses persistent Disabled, Controlled, and Allow All modes rather than a per-action approval queue; Allow All remains bounded by the user's selected scopes and OS permissions.
 
 The agent controls execution within those configured boundaries. A complex task should not fail simply because it required six reads, three edits, a test run, and another correction.
 

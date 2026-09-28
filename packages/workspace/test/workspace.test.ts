@@ -2,9 +2,15 @@ import { promises as fs } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { classifyFile, WorkspaceService } from '../src';
+import { classifyFile, shouldWatchRecursively, WorkspaceService } from '../src';
 
 describe('WorkspaceService state', () => {
+  it('does not recursively watch home or its ancestors on launch', () => {
+    expect(shouldWatchRecursively('/Users/example', '/Users/example')).toBe(false);
+    expect(shouldWatchRecursively('/Users', '/Users/example')).toBe(false);
+    expect(shouldWatchRecursively('/', '/Users/example')).toBe(false);
+    expect(shouldWatchRecursively('/Users/example/Dev/project', '/Users/example')).toBe(true);
+  });
   it('preserves opened Git and creation metadata in subsequent info reads', async () => {
     const root = await fs.mkdtemp(join(tmpdir(), 'forge-workspace-info-'));
     try {
@@ -67,6 +73,7 @@ describe('WorkspaceService state', () => {
       await service.open(root);
       const rootEntries = await service.list('', { recursive: false });
       expect(rootEntries.find((entry) => entry.name === 'parent')?.children).toBeUndefined();
+      expect(rootEntries.find((entry) => entry.name === 'parent')?.modifiedAt).toBe(0);
       const parentEntries = await service.list('parent', { recursive: false });
       expect(parentEntries.map((entry) => entry.name)).toEqual(['child']);
       const bounded = await service.list('', { maxEntries: 1 });

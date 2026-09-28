@@ -72,6 +72,14 @@ describe('shell and terminal services', () => {
     expect(output).toMatchObject({ executable: process.execPath, argv: ['-e', 'process.stdout.write(process.cwd())'], cwd: root, stdout: root, exitCode: 0 });
   });
 
+  it('accepts an absolute working directory outside the active workspace', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'forge-shell-root-'));
+    const outside = await realpath(await mkdtemp(path.join(os.tmpdir(), 'forge-shell-outside-')));
+    const service = new ShellService(() => root);
+    const output = await service.run({ command: process.execPath, args: ['-e', 'process.stdout.write(process.cwd())'], workingDirectory: outside, timeoutMs: 2_000, reason: 'test', expectedOutcome: 'outside cwd' });
+    expect(output.stdout).toBe(outside);
+  });
+
   it('reports a missing explicitly requested cwd before spawn', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'forge-missing-cwd-')); const service = new ShellService(() => root);
     await expect(service.run({ command: 'definitely-missing-executable', args: [], workingDirectory: 'missing-directory', timeoutMs: 2_000, reason: 'test', expectedOutcome: 'missing cwd' })).rejects.toThrow('cwd does not exist: missing-directory');

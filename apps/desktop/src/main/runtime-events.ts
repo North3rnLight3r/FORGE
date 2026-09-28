@@ -3,7 +3,7 @@ import { IPC_CHANNELS, type IPCChannel, type RuntimeEventType } from '@forge/ipc
 const TASK_MUTATIONS: IPCChannel[] = [
   IPC_CHANNELS.tasksCreate, IPC_CHANNELS.tasksUpdate, IPC_CHANNELS.tasksCreateRelease,
   IPC_CHANNELS.tasksDelete, IPC_CHANNELS.tasksPause, IPC_CHANNELS.tasksResume,
-  IPC_CHANNELS.tasksCancel, IPC_CHANNELS.tasksRetryStep, IPC_CHANNELS.tasksHandoff
+  IPC_CHANNELS.tasksCancel, IPC_CHANNELS.tasksRedirect, IPC_CHANNELS.tasksRetryStep, IPC_CHANNELS.tasksHandoff
 ];
 const MEMORY_MUTATIONS: IPCChannel[] = [
   IPC_CHANNELS.agentMemoriesDelete, IPC_CHANNELS.agentMemoriesClear,

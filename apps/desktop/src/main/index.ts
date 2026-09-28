@@ -89,6 +89,20 @@ const intelligence = new WorkspaceIntelligenceService(contextBuilder, storage);
 const embeddingClient = new OpenAICompatibleEmbeddingClient(() => settings.embeddingConfiguration(), (event) => emitRuntimeEvent(event.type, event.payload));
 const semanticContext = new SemanticContextService(storage, embeddingClient, () => settings.embeddingConfiguration(), (event) => emitRuntimeEvent(event.type, event.payload), workspace);
 const semanticIndexer = new SemanticIndexer(workspace, storage, embeddingClient, () => settings.embeddingConfiguration(), (event) => emitRuntimeEvent(event.type, event.payload));
+
+async function runSemanticRefresh(operation: () => Promise<Awaited<ReturnType<SemanticIndexer['incremental']>>>, trigger: string): Promise<void> {
+  try {
+    let status = await operation();
+    if (['degraded', 'rebuild-required'].includes(status.state) && settings.publicSettings().autoRepairIndex) {
+      await emitRuntimeEvent('semantic.index.start', { trigger, repair: true, priorState: status.state });
+      status = await semanticIndexer.rebuild();
+    }
+    if (status.state === 'degraded' || status.state === 'rebuild-required') await emitRuntimeEvent('semantic.index.error', { trigger, state: status.state, message: status.lastError ?? 'Semantic index requires repair.' });
+    else if (status.state === 'ready') await emitRuntimeEvent('context.updated', { trigger, indexedRecords: status.indexedRecords });
+  } catch (error) {
+    await emitRuntimeEvent('semantic.index.error', { trigger, message: error instanceof Error ? error.message : String(error) });
+  }
+}
 contextBuilder.useSemanticContext(semanticContext);
 const memoryService = new MemoryService(storage as any);
 const memoryRetriever = new MemoryRetriever(memoryService as any);
@@ -134,14 +148,16 @@ function register<C extends IPCChannel>(channel: C, action: (request: IPCRequest
       const event = eventForChannel(channel);
       if (event) {
         await emitRuntimeEvent(event, { channel }); await emitRuntimeEvent('context.invalidated', { channel });
-        if (['task.changed', 'memory.changed'].includes(event) && settings.publicSettings().embeddingEnabled) void semanticIndexer.refreshDurableState().then(() => emitRuntimeEvent('context.updated', { channel })).catch(() => undefined);
+        if (['task.changed', 'memory.changed'].includes(event) && settings.publicSettings().embeddingEnabled && settings.publicSettings().autoIndex) void runSemanticRefresh(() => semanticIndexer.refreshDurableState(), `durable-state:${channel}`);
       }
       return { success: true, data };
     }
     catch (error) {
       const code = error instanceof Error && 'code' in error ? String(error.code) : undefined;
       const message = code === 'EACCES' || code === 'EPERM'
-        ? 'FORGE does not have permission to access that location. Choose a user-owned workspace or update the file permissions, then try again.'
+        ? process.platform === 'darwin'
+          ? 'macOS denied access. Grant the installed FORGE app Full Disk Access in System Settings → Privacy & Security, then relaunch. Administrator-owned paths may still require separate elevation.'
+          : 'The operating system denied access to that location. Check the file owner and permissions, then try again.'
         : error instanceof Error ? error.message : 'An unexpected error occurred.';
       return { success: false, error: { message, code } };
     }
@@ -156,9 +172,10 @@ async function openWorkspaceAt(rootPath: string): Promise<NonNullable<ReturnType
   const info = await workspace.open(rootPath);
   await git.init(info.rootPath);
   await storage.init(info.rootPath);
+  await settings.rememberWorkspacePath(info.rootPath);
   workspace.watch();
   await refreshBrowserRecords();
-  if (settings.publicSettings().embeddingEnabled) void semanticIndexer.incremental().then(() => emitRuntimeEvent('context.updated', { reason: 'workspace-indexed' })).catch(() => undefined);
+  if (settings.publicSettings().embeddingEnabled && settings.publicSettings().autoIndex) void runSemanticRefresh(() => semanticIndexer.incremental(), 'workspace-open');
   return info;
 }
 
@@ -166,13 +183,13 @@ const pendingSemanticPaths = new Set<string>();
 let semanticRefreshTimer: NodeJS.Timeout | null = null;
 workspace.on('changed', (relativePath: string) => {
   void emitRuntimeEvent('file.changed', { path: relativePath });
-  if (!settings.publicSettings().embeddingEnabled) return;
+  if (!settings.publicSettings().embeddingEnabled || !settings.publicSettings().autoIndex) return;
   pendingSemanticPaths.add(relativePath);
   if (semanticRefreshTimer) clearTimeout(semanticRefreshTimer);
   semanticRefreshTimer = setTimeout(() => {
     semanticRefreshTimer = null;
     const paths = [...pendingSemanticPaths]; pendingSemanticPaths.clear();
-    void semanticIndexer.refreshPaths(paths).then(() => emitRuntimeEvent('context.updated', { paths })).catch(() => undefined);
+    void runSemanticRefresh(() => semanticIndexer.refreshPaths(paths), `file-change:${paths.length}`);
   }, 300);
 });
 
@@ -414,7 +431,7 @@ function registerHandlers(): void {
   register(IPC_CHANNELS.appBuildInfo, async () => appBuildInfo());
   register(IPC_CHANNELS.appBuildInfoCopy, async () => { const info = appBuildInfo(); clipboard.writeText(formatAppBuildInfo(info)); return info; });
   register(IPC_CHANNELS.settingsGet, async () => settings.publicSettings());
-  register(IPC_CHANNELS.settingsSave, async (request) => { const result = await settings.save(request); await applyAISettings(); updater.setChannel(result.updateChannel); if (result.embeddingEnabled) void semanticIndexer.incremental().catch(() => undefined); return result; });
+  register(IPC_CHANNELS.settingsSave, async (request) => { const result = await settings.save(request); await applyAISettings(); updater.setChannel(result.updateChannel); if (result.embeddingEnabled && result.autoIndex) void runSemanticRefresh(() => semanticIndexer.incremental(), 'settings-save'); return result; });
   register(IPC_CHANNELS.settingsTestApi, async () => aiProvider.testConnection());
   register(IPC_CHANNELS.settingsModelsList, async (request) => new OpenAIProvider(await settings.apiConfiguration({ apiKey: request.apiKey, baseUrl: request.apiBaseUrl })).listModels());
   register(IPC_CHANNELS.settingsModelValidate, async (request) => new OpenAIProvider(await settings.apiConfiguration({ apiKey: request.apiKey, baseUrl: request.apiBaseUrl, model: request.apiModel })).validateModel(request.apiModel));
@@ -488,6 +505,21 @@ function registerHandlers(): void {
   register(IPC_CHANNELS.toolRequestsList, async () => { const project = await storage.dashboard(); return project ? toolRouter.listRequests(project.id) : []; });
   register(IPC_CHANNELS.toolRequestCancel, async (request) => toolRouter.cancel(request.requestId, await toolContext()));
   register(IPC_CHANNELS.toolActionsList, async (request) => storage.listActions(request));
+  register(IPC_CHANNELS.toolCatalog, async () => toolRouter.capabilityCatalog(settings.publicSettings().agentExecutionMode));
+  register(IPC_CHANNELS.toolExecute, async (request) => {
+    const current = settings.publicSettings();
+    const context = await toolContext();
+    const outcome = await toolRouter.request({ id: request.requestId, name: request.toolName, provider: 'forge-tool-panel', arguments: request.arguments }, { ...context, repositoryRoot: workspace.info()?.gitRoot ?? undefined, filesystemScope: current.filesystemScope, projectTreeRoot: current.projectTreeRoot || undefined, executionMode: current.agentExecutionMode, networkAccess: current.networkAccess, backgroundTasksEnabled: current.backgroundTasksEnabled, autoRepairToolArguments: current.autoRepairToolArguments, processMode: current.processMode, processTimeoutMs: current.processTimeoutMs, backgroundTaskTimeoutMs: current.backgroundTaskTimeoutMs, userRequest: 'The user explicitly ran this capability from the FORGE Tooling panel.' });
+    if (!outcome.result) throw new Error(`Tool ${request.toolName} did not return an execution result.`);
+    return outcome.result;
+  });
+  register(IPC_CHANNELS.agentStopAll, async () => {
+    const project = await storage.dashboard();
+    if (!project) return { toolsCancelled: 0, tasksCancelled: 0 };
+    const toolsCancelled = await toolRouter.cancelAll(project.id);
+    const tasksCancelled = await taskRuntime.stopAll();
+    return { toolsCancelled, tasksCancelled };
+  });
   register(IPC_CHANNELS.editorDirtyUpdate, async (request) => { dirtyEditorPaths.clear(); for (const value of request.paths) if (value && !value.split(/[\\/]/).includes('..')) dirtyEditorPaths.add(value); return undefined; });
   register(IPC_CHANNELS.terminalCreate, async (request) => terminalService.create(request?.workingDirectory, request?.columns, request?.rows));
   register(IPC_CHANNELS.terminalList, async () => terminalService.list());
@@ -504,6 +536,7 @@ function registerHandlers(): void {
   register(IPC_CHANNELS.tasksResume, async (request) => nativeAgent.runTaskStep(request.taskId));
   register(IPC_CHANNELS.tasksPause, async (request) => taskRuntime.pause(request.taskId, request.reason));
   register(IPC_CHANNELS.tasksCancel, async (request) => taskRuntime.cancel(request.taskId, request.reason, request.trackingOnly));
+  register(IPC_CHANNELS.tasksRedirect, async (request) => taskRuntime.redirect(request.taskId, request.instruction));
   register(IPC_CHANNELS.tasksDelete, async (request) => { await storage.deletePersistentTask(request.taskId); return undefined; });
   register(IPC_CHANNELS.tasksRetryStep, async (request) => { await taskRuntime.retryStep(request.taskId, request.stepId); return nativeAgent.runTaskStep(request.taskId); });
   register(IPC_CHANNELS.tasksHandoff, async (request) => taskRuntime.generateHandoff(request.taskId));
@@ -562,7 +595,7 @@ app.on('second-instance', (_event, commandLine) => {
 app.whenReady().then(async () => {
   const developmentIcon = join(process.cwd(), 'apps/desktop/resources/ForgeIcon-v2.5-1024.png');
   if (process.platform === 'darwin' && is.dev && app.dock && existsSync(developmentIcon)) app.dock.setIcon(developmentIcon);
-  try { await settings.init(); await applyAISettings(); updater.setChannel(settings.updateChannel()); registerHandlers(); const startupWorkspace = process.argv.find((argument) => argument.startsWith('--workspace='))?.slice('--workspace='.length); if (startupWorkspace) await openWorkspaceAt(startupWorkspace); createWindow(); app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); }); }
+  try { await settings.init(); await applyAISettings(); updater.setChannel(settings.updateChannel()); registerHandlers(); const startupWorkspace = process.argv.find((argument) => argument.startsWith('--workspace='))?.slice('--workspace='.length) ?? settings.lastWorkspacePath(); if (startupWorkspace) await openWorkspaceAt(startupWorkspace).catch(() => undefined); createWindow(); app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); }); }
   catch (error) { dialog.showErrorBox('FORGE could not start', error instanceof Error ? error.message : String(error)); app.quit(); }
 });
 app.on('window-all-closed', async () => { terminalService.dispose(); await forgeLive?.stop().catch(() => undefined); forgeLive = null; await semanticIndexer.stop(); await storage.close(); if (process.platform !== 'darwin') app.quit(); });

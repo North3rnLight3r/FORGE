@@ -2,13 +2,13 @@ import { chmod, mkdtemp, mkdir, readFile, symlink, writeFile } from 'node:fs/pro
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { boundedToolEvidence, ToolRouter, createToolRegistry, normalizeCommandLine, parseStructuredToolFallback, resolveContainedPath, unifiedDiff, type AuditRecord, type ProviderToolCall } from '../src';
+import { boundedToolEvidence, ToolRouter, createToolRegistry, normalizeCommandLine, normalizeProviderToolCall, parseStructuredToolFallback, resolveContainedPath, resolveScopedPath, unifiedDiff, type AuditRecord, type ProviderToolCall } from '../src';
 
 const fakeGit = { status: async () => ({ branch: 'main', ahead: 0, behind: 0, files: [], head: null }), branches: async () => [], log: async () => [], diff: async () => ({ files: [] }), stage: async () => undefined, unstage: async () => undefined, commit: async () => ({ hash: '1' }), pull: async () => undefined, push: async () => undefined } as any;
 const fakeShell = { run: async () => ({ stdout: '', stderr: '', exitCode: 0, signal: null, timedOut: false, cancelled: false, truncated: false }), cancel: () => true } as any;
-const fakeWeb = { search: async () => ({ query: '', results: [] }), fetch: async () => ({}) } as any;
+const fakeWeb = { isEnabled: () => true, search: async () => ({ query: '', results: [] }), fetch: async () => ({}) } as any;
 const fakeBrowser = { enabled: () => true, open: async (url: string) => ({ url, title: 'Example', canGoBack: false, canGoForward: false }), read: async () => ({ url: 'https://example.com/', title: 'Example Domain', text: 'Example Domain This domain is for use in illustrative examples in documents.', truncated: false }) };
-const fakeTasks = { get: async () => ({}), create: async () => ({}), resume: async () => ({}), pause: async () => ({}), cancel: async () => ({}), checkpoint: async () => ({}), generateHandoff: async () => ({}), startBackground: async () => ({}) } as any;
+const fakeTasks = { get: async () => ({}), create: async () => ({}), resume: async () => ({}), pause: async () => ({}), cancel: async () => ({}), redirect: async (_taskId: string, instruction: string) => ({ instruction }), checkpoint: async () => ({}), generateHandoff: async () => ({}), startBackground: async () => ({}) } as any;
 
 describe('agent tool runtime', () => {
   describe('shell command normalization', () => {
@@ -18,6 +18,7 @@ describe('agent tool runtime', () => {
 
     it('normalizes an executable with multiple arguments', () => {
       expect(normalizeCommandLine('hermes acp --help')).toEqual({ command: 'hermes', args: ['acp', '--help'] });
+      expect(normalizeCommandLine('cd ..')).toEqual({ command: 'bash', args: ['-lc', 'cd ..'] });
     });
 
     it('passes normalized executable and argv separately through ToolRouter and the audit record', async () => {
@@ -46,13 +47,23 @@ describe('agent tool runtime', () => {
       expect(normalizeCommandLine(script)).toEqual({ command: 'bash', args: ['-lc', script] });
     });
 
-    it('rejects a malformed one-entry command array before the shell executor runs', async () => {
+    it('normalizes a command array before the shell executor runs', async () => {
       const root = await mkdtemp(path.join(os.tmpdir(), 'forge-malformed-shell-'));
       let executed = false;
       const router = new ToolRouter({ git: fakeGit, shell: { ...fakeShell, run: async () => { executed = true; return fakeShell.run(); } }, web: fakeWeb, audit: { appendAction: async () => undefined, listActions: async () => [] }, dirtyPaths: () => new Set() });
       const context = { workspaceId: 'workspace-1', workspaceRoot: root, conversationId: 'conversation-1', modelId: 'test-model' };
-      await expect(router.request({ id: 'malformed-shell', name: 'shell.run', provider: 'test', arguments: ['hermes acp --help'] }, context)).rejects.toThrow(/Executable and arguments must be separate/);
-      expect(executed).toBe(false);
+      const result = await router.request({ id: 'array-shell', name: 'shell.run', provider: 'test', arguments: ['hermes', 'acp', '--help'] }, context);
+      expect(result.result?.success).toBe(true);
+      expect(result.request.input).toMatchObject({ command: 'hermes', args: ['acp', '--help'] });
+      expect(executed).toBe(true);
+    });
+
+    it('accepts a plain command string and infers a network profile', async () => {
+      const root = await mkdtemp(path.join(os.tmpdir(), 'forge-shell-text-'));
+      const router = new ToolRouter({ git: fakeGit, shell: fakeShell, web: fakeWeb, audit: { appendAction: async () => undefined, listActions: async () => [] }, dirtyPaths: () => new Set() });
+      const context = { workspaceId: 'workspace-1', workspaceRoot: root, conversationId: 'conversation-1', modelId: 'test-model', userRequest: 'Install dependencies.' };
+      const result = await router.request({ id: 'text-shell', name: 'shell.run', provider: 'test', arguments: 'npm install' }, context);
+      expect(result.request.input).toMatchObject({ command: 'npm', args: ['install'], networkProfile: 'package-manager' });
     });
   });
 
@@ -102,9 +113,27 @@ describe('agent tool runtime', () => {
     expect(JSON.stringify(records)).not.toContain('approval');
   });
 
+  it('reads and patches a hidden file outside the active workspace with a workspace rollback backup', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'forge-tool-root-'));
+    const outside = await mkdtemp(path.join(os.tmpdir(), 'forge-tool-external-'));
+    const target = path.join(outside, '.settings');
+    await writeFile(target, 'before\n');
+    const router = new ToolRouter({ git: fakeGit, shell: fakeShell, web: fakeWeb, audit: { appendAction: async () => undefined, listActions: async () => [] }, dirtyPaths: () => new Set() });
+    const context = { workspaceId: 'workspace-1', workspaceRoot: root, conversationId: 'conversation-1', modelId: 'test-model', filesystemScope: 'full' as const, userRequest: 'Read and update the hidden settings file.' };
+    const listing = await router.request({ id: 'outside-list', name: 'file.list', provider: 'test', arguments: { path: outside } }, context);
+    expect(listing.result?.output).toMatchObject({ entries: [{ path: await (await import('node:fs/promises')).realpath(target) }] });
+    const read = await router.request({ id: 'outside-read', name: 'file.read', provider: 'test', arguments: { path: target } }, context);
+    expect(read.result?.output).toMatchObject({ content: 'before\n' });
+    const patch = await router.request({ id: 'outside-patch', name: 'file.patch', provider: 'test', arguments: { path: target, expected: 'before', replacement: 'after' } }, context);
+    expect(patch.result?.success).toBe(true);
+    expect(await readFile(target, 'utf8')).toBe('after\n');
+    expect(patch.result?.rollback?.backupPath).toContain('.forge/backups/');
+    expect(await readFile(path.join(root, patch.result!.rollback!.backupPath!), 'utf8')).toBe('before\n');
+  });
+
   it('keeps runtime bookkeeping out of every provider-visible tool schema', () => {
     const router = new ToolRouter({ git: fakeGit, shell: fakeShell, web: { ...fakeWeb, isEnabled: () => true }, browser: fakeBrowser, terminal: { list: () => [] }, tasks: fakeTasks, audit: { appendAction: async () => undefined, listActions: async () => [] }, dirtyPaths: () => new Set() });
-    const schemas = router.providerDefinitions();
+    const schemas = router.providerDefinitions('allow-all');
     const browserRead = schemas.find((entry) => entry.name === 'browser.read');
     expect(browserRead?.parameters).toMatchObject({ type: 'object', properties: {}, additionalProperties: false });
     for (const entry of schemas) {
@@ -116,11 +145,82 @@ describe('agent tool runtime', () => {
     expect(JSON.stringify(schemas.find((entry) => entry.name === 'task.process.start')?.parameters)).not.toMatch(/taskId|stepId/);
   });
 
-  it('blocks traversal and symlink workspace escapes', async () => {
+  it('accepts absolute paths, upward traversal, and symlinks outside the workspace', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'forge-containment-')); const outside = await mkdtemp(path.join(os.tmpdir(), 'forge-outside-'));
     await mkdir(path.join(root, 'inside')); await symlink(outside, path.join(root, 'escape'), process.platform === 'win32' ? 'junction' : 'dir');
-    await expect(resolveContainedPath(root, '../outside', true)).rejects.toThrow(/relative|traverse/);
-    await expect(resolveContainedPath(root, 'escape')).rejects.toThrow(/Symlink/);
+    expect(await resolveContainedPath(root, outside)).toBe(outside);
+    expect(await resolveContainedPath(root, '..')).toBe(path.dirname(await (await import('node:fs/promises')).realpath(root)));
+    expect(await resolveContainedPath(root, 'escape')).toBe(path.join(await (await import('node:fs/promises')).realpath(root), 'escape'));
+  });
+
+  it('enforces configured filesystem scopes after resolving symlinks', async () => {
+    const repository = await mkdtemp(path.join(os.tmpdir(), 'forge-scope-repo-'));
+    const workspace = path.join(repository, 'apps', 'website');
+    const sibling = path.join(repository, 'shared', 'config.ts');
+    const external = await mkdtemp(path.join(os.tmpdir(), 'forge-scope-external-'));
+    await mkdir(workspace, { recursive: true }); await mkdir(path.dirname(sibling), { recursive: true });
+    await writeFile(sibling, 'export const value = 1;'); await writeFile(path.join(external, 'secret.txt'), 'outside');
+    await symlink(external, path.join(workspace, 'linked'), process.platform === 'win32' ? 'junction' : 'dir');
+    await expect(resolveScopedPath({ workspaceRoot: workspace, scope: 'workspace' }, '../../shared/config.ts')).rejects.toThrow('SCOPE_FAILURE');
+    expect(await resolveScopedPath({ workspaceRoot: workspace, scope: 'repository', repositoryRoot: repository }, '../../shared/config.ts')).toBe(await (await import('node:fs/promises')).realpath(sibling));
+    expect(await resolveScopedPath({ workspaceRoot: workspace, scope: 'full' }, path.join(external, 'secret.txt'))).toBe(await (await import('node:fs/promises')).realpath(path.join(external, 'secret.txt')));
+    await expect(resolveScopedPath({ workspaceRoot: workspace, scope: 'repository', repositoryRoot: repository }, 'linked/secret.txt')).rejects.toThrow('SCOPE_FAILURE');
+    await expect(resolveScopedPath({ workspaceRoot: workspace, scope: 'project-tree' }, 'file.txt', true)).rejects.toThrow('selected project root');
+  });
+
+  it('normalizes redundant read locations and empty list roots before schema validation', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'forge-normalize-files-')); await writeFile(path.join(root, 'notes.txt'), 'first\nsecond\nthird\n');
+    const normalizedLines = normalizeProviderToolCall({ id: 'line-read', name: 'file.read', provider: 'test', arguments: { path: 'notes.txt', offset: 7, startLine: 2, endLine: 2 } }, 'Read line 2 from notes.txt.');
+    expect(normalizedLines.arguments).toEqual({ path: 'notes.txt', startLine: 2, endLine: 2 });
+    const normalizedRange = normalizeProviderToolCall({ id: 'range-read', name: 'file.read', provider: 'test', arguments: { path: 'notes.txt', offset: 7, startLine: 2, endLine: 2 } });
+    expect(normalizedRange.arguments).toEqual({ path: 'notes.txt', offset: 7 });
+    expect(normalizeProviderToolCall({ id: 'root-list', name: 'file.list', provider: 'test', arguments: { path: '' } }).arguments).toMatchObject({ path: '.' });
+    const router = new ToolRouter({ git: fakeGit, shell: fakeShell, web: fakeWeb, audit: { appendAction: async () => undefined, listActions: async () => [] }, dirtyPaths: () => new Set() });
+    const outcome = await router.request({ id: 'normalized-read', name: 'file.read', provider: 'test', arguments: { path: 'notes.txt', offset: 7, startLine: 2, endLine: 2 } }, { workspaceId: 'workspace-1', workspaceRoot: root, conversationId: 'conversation-1', modelId: 'test-model' });
+    expect(outcome.result?.success).toBe(true);
+    expect(outcome.request.input).toMatchObject({ path: 'notes.txt', offset: 7 });
+  });
+
+  it('allows repository traversal only when the request carries repository scope', async () => {
+    const repository = await mkdtemp(path.join(os.tmpdir(), 'forge-router-repo-'));
+    const workspace = path.join(repository, 'apps', 'website'); const target = path.join(repository, 'shared', 'config.ts');
+    await mkdir(workspace, { recursive: true }); await mkdir(path.dirname(target), { recursive: true }); await writeFile(target, 'shared config');
+    const router = new ToolRouter({ git: fakeGit, shell: fakeShell, web: fakeWeb, audit: { appendAction: async () => undefined, listActions: async () => [] }, dirtyPaths: () => new Set() });
+    const context = { workspaceId: 'workspace-1', workspaceRoot: workspace, repositoryRoot: repository, conversationId: 'conversation-1', modelId: 'test-model' };
+    const denied = await router.request({ id: 'sandbox-denied', name: 'file.read', provider: 'test', arguments: { path: '../../shared/config.ts' } }, context);
+    expect(denied.result?.success).toBe(false); expect(denied.result?.error?.message).toContain('SCOPE_FAILURE');
+    const allowed = await router.request({ id: 'repository-allowed', name: 'file.read', provider: 'test', arguments: { path: '../../shared/config.ts' } }, { ...context, filesystemScope: 'repository' });
+    expect(allowed.result?.output).toMatchObject({ content: 'shared config' });
+  });
+
+  it('enforces Disabled and configured network policy and caps process timeouts', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'forge-policy-tools-'));
+    let receivedTimeout = 0;
+    const router = new ToolRouter({ git: fakeGit, shell: { ...fakeShell, run: async (input: { timeoutMs: number }) => { receivedTimeout = input.timeoutMs; return fakeShell.run(); } }, web: fakeWeb, audit: { appendAction: async () => undefined, listActions: async () => [] }, dirtyPaths: () => new Set() });
+    expect(router.providerDefinitions('disabled')).toEqual([]);
+    expect(router.providerDefinitions('controlled').map((entry) => entry.name)).toContain('file.read');
+    expect(router.providerDefinitions('controlled').map((entry) => entry.name)).not.toContain('file.write');
+    const base = { workspaceId: 'workspace-1', workspaceRoot: root, conversationId: 'conversation-1', modelId: 'test-model' };
+    await expect(router.request({ id: 'disabled-call', name: 'file.list', provider: 'test', arguments: {} }, { ...base, executionMode: 'disabled' })).rejects.toThrow('POLICY_FAILURE');
+    await expect(router.request({ id: 'controlled-write', name: 'file.create', provider: 'test', arguments: { path: 'blocked.txt', content: 'no', reason: 'Write should be denied.' } }, { ...base, executionMode: 'controlled' })).rejects.toThrow('Select Allow All');
+    await expect(router.request({ id: 'blocked-network', name: 'shell.run', provider: 'test', arguments: { command: 'curl', args: ['https://example.com'], networkProfile: 'offline', reason: 'Inspect public headers.' } }, { ...base, networkAccess: { web: false, git: false, packageManager: false, general: false } })).rejects.toThrow('General network access is disabled');
+    const process = await router.request({ id: 'capped-process', name: 'shell.run', provider: 'test', arguments: { command: 'printf', args: ['ok'], timeoutMs: 20_000, reason: 'Print a short value.' } }, { ...base, processTimeoutMs: 5_000 });
+    expect(process.result?.success).toBe(true); expect(process.request.input).toMatchObject({ timeoutMs: 5_000 }); expect(receivedTimeout).toBe(5_000);
+    const standard = await router.request({ id: 'standard-process', name: 'shell.run', provider: 'test', arguments: { command: 'printf', args: ['ok'], timeoutMs: 600_000, reason: 'Use standard limits.' } }, { ...base, processTimeoutMs: 600_000, processMode: 'standard' });
+    const full = await router.request({ id: 'full-process', name: 'shell.run', provider: 'test', arguments: { command: 'printf', args: ['ok'], timeoutMs: 600_000, reason: 'Use full local compute.' } }, { ...base, processTimeoutMs: 600_000, processMode: 'full-local-compute' });
+    expect(standard.request.input).toMatchObject({ timeoutMs: 120_000 }); expect(full.request.input).toMatchObject({ timeoutMs: 600_000 });
+  });
+
+  it('validates shell working directories against the selected filesystem scope', async () => {
+    const repository = await mkdtemp(path.join(os.tmpdir(), 'forge-shell-scope-repo-'));
+    const workspace = path.join(repository, 'apps', 'site'); const sibling = path.join(repository, 'tools');
+    await mkdir(workspace, { recursive: true }); await mkdir(sibling);
+    let observedCwd = '';
+    const router = new ToolRouter({ git: fakeGit, shell: { ...fakeShell, run: async (input: { workingDirectory: string }) => { observedCwd = input.workingDirectory; return { ...await fakeShell.run(), cwd: input.workingDirectory, exitCode: 0 }; } }, web: fakeWeb, audit: { appendAction: async () => undefined, listActions: async () => [] }, dirtyPaths: () => new Set() });
+    const context = { workspaceId: 'workspace-1', workspaceRoot: workspace, repositoryRoot: repository, conversationId: 'conversation-1', modelId: 'test-model' };
+    await expect(router.request({ id: 'shell-sandbox', name: 'shell.run', provider: 'test', arguments: { command: 'pwd', workingDirectory: '../../tools', timeoutMs: 1_000, reason: 'Check the sibling directory.' } }, context)).resolves.toMatchObject({ result: { success: false, error: { code: 'SCOPE_FAILURE' } } });
+    const allowed = await router.request({ id: 'shell-repository', name: 'shell.run', provider: 'test', arguments: { command: 'pwd', workingDirectory: '../../tools', timeoutMs: 1_000, reason: 'Check the sibling directory.' } }, { ...context, filesystemScope: 'repository' });
+    expect(allowed.result?.success).toBe(true); expect(observedCwd).toBe(await (await import('node:fs/promises')).realpath(sibling));
   });
 
   it('returns structured recovery metadata for missing filesystem paths', async () => {
@@ -147,7 +247,7 @@ describe('agent tool runtime', () => {
     expect(second.result?.output).toMatchObject({ truncated: false, matches: [{ line: 3, text: 'needle three' }] });
   });
 
-  it('skips protected home paths during recursive model listing and search', async () => {
+  it('shows hidden paths during recursive model listing and search', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'forge-home-tools-'));
     const protectedDirectory = path.join(root, 'protected');
     await writeFile(path.join(root, 'visible.txt'), 'needle');
@@ -161,10 +261,10 @@ describe('agent tool runtime', () => {
       const listing = await router.request({ id: 'home-list', name: 'file.list', provider: 'test', arguments: { recursive: true, maxDepth: 8 } }, context);
       expect(listing.result?.success).toBe(true);
       expect(listing.result?.output).toMatchObject({ entries: expect.arrayContaining([expect.objectContaining({ path: 'visible.txt' })]) });
-      expect(JSON.stringify(listing.result?.output)).not.toContain('private.txt');
+      expect(JSON.stringify(listing.result?.output)).toContain('private.txt');
       const search = await router.request({ id: 'home-search', name: 'file.search', provider: 'test', arguments: { query: 'needle' } }, context);
       expect(search.result?.success).toBe(true);
-      expect(search.result?.output).toMatchObject({ matches: [{ path: 'visible.txt' }] });
+      expect(search.result?.output).toMatchObject({ matches: expect.arrayContaining([{ path: 'visible.txt', line: 1, text: 'needle' }, { path: path.join('.local', 'share', 'containers', 'storage', 'overlay', 'private.txt'), line: 1, text: 'needle' }]) });
     } finally {
       if (process.platform !== 'win32') await chmod(protectedDirectory, 0o700).catch(() => undefined);
     }
@@ -209,6 +309,20 @@ describe('agent tool runtime', () => {
     const router = new ToolRouter({ git: fakeGit, shell: fakeShell, web: { ...fakeWeb, isEnabled: () => false }, audit: { appendAction: async () => undefined, listActions: async () => [] }, dirtyPaths: () => new Set() });
     const names = router.providerDefinitions().map((definition) => definition.name);
     expect(names).toContain('file.read'); expect(names).not.toContain('terminal.read'); expect(names).not.toContain('github.read'); expect(names).not.toContain('web.search'); expect(names).not.toContain('browser.open');
+  });
+
+  it('derives capability visibility from the registry and executes task redirects through the audited router', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'forge-capability-catalog-'));
+    let redirected = '';
+    const router = new ToolRouter({ git: fakeGit, shell: fakeShell, web: fakeWeb, tasks: { ...fakeTasks, redirect: async (_taskId: string, instruction: string) => { redirected = instruction; return { status: 'running' }; } }, audit: { appendAction: async () => undefined, listActions: async () => [] }, dirtyPaths: () => new Set() });
+    const catalog = router.capabilityCatalog('allow-all');
+    expect(catalog).toHaveLength(router.definitions().length);
+    expect(catalog.every((entry) => entry.registered && entry.executorPresent && entry.inputSchema)).toBe(true);
+    expect(catalog.find((entry) => entry.name === 'task.redirect')?.providerVisible).toBe(true);
+    const result = await router.request({ id: 'ui-task-redirect', name: 'task.redirect', provider: 'test', arguments: { taskId: '00000000-0000-4000-8000-000000000000', instruction: 'Skip the build.', reason: 'Redirect the task.' } }, { workspaceId: 'workspace-1', workspaceRoot: root, conversationId: 'conversation-1', modelId: 'test-model' });
+    expect(result.result?.success).toBe(true); expect(redirected).toBe('Skip the build.');
+    const unavailable = new ToolRouter({ git: fakeGit, shell: fakeShell, web: fakeWeb, audit: { appendAction: async () => undefined, listActions: async () => [] }, dirtyPaths: () => new Set() }).capabilityCatalog();
+    expect(unavailable.find((entry) => entry.name === 'task.redirect')).toMatchObject({ available: false, executorPresent: true, providerVisible: false, unavailableReason: 'the persistent task runtime is unavailable' });
   });
 
   it('creates visible diffs and applies atomic patches with rollback backups', async () => {

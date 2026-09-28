@@ -1,6 +1,6 @@
 import type { AgentMessage } from '@forge/ai';
 import type { ToolRequestOutcome } from '@forge/agent-tools';
-import { boundedToolEvidence, parseStructuredToolFallback } from '@forge/agent-tools';
+import { boundedToolEvidence, normalizeProviderToolCall, parseStructuredToolFallback, sanitizeToolData } from '@forge/agent-tools';
 import { randomUUID } from 'node:crypto';
 import { ProgressAwareLoopGuard } from './agent-continuation';
 import { taskEvidenceLink, type TaskStepLink } from './task-links';
@@ -37,11 +37,10 @@ export function runtimeToolRecoveryGuidance(toolName: string, errorMessage: stri
   const message = errorMessage.toLowerCase();
   const catalog = [...availableTools].sort().join(', ');
   const guidance = [`Runtime tool catalog: ${catalog || '(none)'}.`, `The failed ${toolName} invocation does not mean the tool is unavailable; distinguish argument, policy, and execution failures from capability absence.`];
-  if (/workspace-relative|traverse upward|escapes? (?:the )?(?:active )?workspace|absolute paths? require/i.test(errorMessage)) {
-    guidance.push('FORGE file tools are intentionally workspace-scoped. Do not retry them with absolute paths, ~, or .. traversal. Restart discovery at file.list path "." and use only observed workspace-relative paths.');
-    if (availableTools.has('shell.run')) guidance.push('If the user explicitly needs OS-level inspection outside the workspace, shell.run is available. Keep its workingDirectory inside the workspace and pass the external path only as a command argument.');
-  }
-  if (/eacces|eperm|permission denied|scandir/.test(message)) guidance.push('Treat unreadable filesystem paths as skippable evidence. Do not chmod/chown container, cache, or system-owned paths merely to satisfy indexing.');
+  if (/SCOPE_FAILURE/i.test(errorMessage)) guidance.push('The resolved target is outside the configured filesystem scope. Preserve the observed path and tell the user which broader scope to select in Settings; do not repeat the same request or claim the file tool is unavailable.');
+  else if (/workspace-relative|traverse upward|escapes? (?:the )?(?:active )?workspace|absolute paths? require/i.test(errorMessage)) guidance.push('File tools accept relative, parent, home, and absolute paths when permitted by the configured filesystem scope. The operating system may still deny access.');
+  if (/POLICY_FAILURE/i.test(errorMessage)) guidance.push('The operation is blocked by the current execution or network policy. State the exact setting that must be enabled; do not retry unchanged.');
+  if (/eacces|eperm|permission denied|scandir/.test(message)) guidance.push('Report unreadable paths and continue where possible. On macOS, the user may need to grant the installed FORGE app Full Disk Access in System Settings; administrator-owned paths may also require elevation. Do not chmod/chown unrelated paths merely to satisfy indexing.');
   if (toolName.startsWith('browser.') && availableTools.has('browser.read')) guidance.push('browser.read/browser.find operate on the currently visible FORGE Browser page; do not infer that browser context is absent merely because a filesystem lookup failed.');
   if (toolName.startsWith('terminal.') && availableTools.has('terminal.read')) guidance.push('terminal.read reads existing FORGE terminal sessions and is separate from workspace file traversal.');
   return guidance.join(' ');
@@ -71,11 +70,13 @@ export function createNativeAgentRuntime(dependencies: any): NativeAgentRuntime 
     const project = await storage.dashboard();
     const info = workspace.info();
     if (!project || !info) throw new Error('Open a workspace before requesting agent tools.');
-    const definitions = toolRouter.providerDefinitions();
+    const currentSettings = settings.publicSettings();
+    const definitions = toolRouter.providerDefinitions(currentSettings.agentExecutionMode);
     const availableTools = new Set<string>(definitions.map((definition: any) => definition.name));
     const capabilityCatalog = [...availableTools].sort().join(', ');
     let turn = await activeAgent.askWithTools(prompt, history, definitions);
     const outcomes: ToolRequestOutcome[] = [];
+    const successfulEvidence = (): string[] => outcomes.filter((outcome) => outcome.result?.success && !(outcome.result.output as any)?.missing && !(outcome.result.output as any)?.unreadable).map((outcome) => outcome.request.toolName);
     const runtimeFailures: string[] = [];
     const semanticRecordIds = new Set<string>();
     const rememberSemanticContext = (context: any): void => {
@@ -99,7 +100,7 @@ export function createNativeAgentRuntime(dependencies: any): NativeAgentRuntime 
       const fallback = calls.length ? null : parseStructuredToolFallback(activeProvider.id, turn.content);
       if (fallback) calls.push(fallback);
       if (!calls.length) {
-        const missingEvidence = requiredDirectEvidence(prompt, outcomes.filter((outcome) => outcome.result?.success).map((outcome) => outcome.request.toolName));
+        const missingEvidence = requiredDirectEvidence(prompt, successfulEvidence());
         if (missingEvidence.length && evidenceNudges < 3) {
           evidenceNudges += 1;
           continuationHistory.push({ role: 'assistant', content: turn.content || 'I have not yet gathered the explicitly requested workspace evidence.' });
@@ -113,7 +114,7 @@ export function createNativeAgentRuntime(dependencies: any): NativeAgentRuntime 
       const revision = await workspaceRevision();
       const fresh = calls.filter((call) => loopGuard.shouldRun(call, revision));
       if (!fresh.length) {
-        const missingEvidence = requiredDirectEvidence(prompt, outcomes.filter((outcome) => outcome.result?.success).map((outcome) => outcome.request.toolName));
+        const missingEvidence = requiredDirectEvidence(prompt, successfulEvidence());
         if (missingEvidence.length && evidenceNudges < 3) {
           evidenceNudges += 1;
           const evidence = loopGuard.observedResults().join('\n\n');
@@ -130,12 +131,19 @@ export function createNativeAgentRuntime(dependencies: any): NativeAgentRuntime 
       const round: ToolRequestOutcome[] = [];
       const validationEvidence: string[] = [];
       for (const call of fresh) {
+        if (executionTask) {
+          const currentTask = await taskRuntime.get(executionTask.taskId);
+          if (['paused', 'cancelled', 'completed'].includes(currentTask.status)) {
+            validationEvidence.push(JSON.stringify({ type: currentTask.status === 'paused' ? 'PAUSED' : 'CANCELLATION', tool: call.name, message: `Tool launch suppressed because task state is ${currentTask.status}.` }));
+            break;
+          }
+        }
         const toolOperationId = call.id || randomUUID();
         let requestId = call.id;
         let succeeded = false;
         await emitRuntimeEvent?.('tool.requested', { operationId: toolOperationId, toolName: call.name, conversationId: state.activeConversationId, taskId: executionTask?.taskId, stepId: executionTask?.stepId });
         try {
-          const outcome = await toolRouter.request(call, { workspaceId: project.id, workspaceRoot: info.rootPath, conversationId: state.activeConversationId, modelId: turn.modelId ?? settings.publicSettings().apiModel, userRequest: prompt, task: executionTask });
+          const outcome = await toolRouter.request(call, { workspaceId: project.id, workspaceRoot: info.rootPath, repositoryRoot: info.gitRoot ?? undefined, filesystemScope: currentSettings.filesystemScope, projectTreeRoot: currentSettings.projectTreeRoot || undefined, executionMode: currentSettings.agentExecutionMode, networkAccess: currentSettings.networkAccess, backgroundTasksEnabled: currentSettings.backgroundTasksEnabled, autoRepairToolArguments: currentSettings.autoRepairToolArguments, processMode: currentSettings.processMode, processTimeoutMs: currentSettings.processTimeoutMs, backgroundTaskTimeoutMs: currentSettings.backgroundTaskTimeoutMs, conversationId: state.activeConversationId, modelId: turn.modelId ?? currentSettings.apiModel, userRequest: prompt, task: executionTask });
           assertToolIdentity(outcome.request, outcome.result, state.activeConversationId);
           requestId = outcome.request.id;
           succeeded = outcome.result?.success ?? false;
@@ -145,7 +153,10 @@ export function createNativeAgentRuntime(dependencies: any): NativeAgentRuntime 
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
           const guidance = runtimeToolRecoveryGuidance(call.name, message, availableTools);
-          validationEvidence.push(JSON.stringify({ toolName: call.name, success: false, error: { code: 'TOOL_ROUTING_FAILED', message }, recovery: guidance }, null, 2));
+          const errorCode = typeof error === 'object' && error && 'code' in error ? String((error as { code: unknown }).code) : /SCOPE_FAILURE/.test(message) ? 'SCOPE_FAILURE' : /POLICY_FAILURE/.test(message) ? 'POLICY_FAILURE' : 'EXECUTION_FAILURE';
+          let normalizedArguments: unknown;
+          try { normalizedArguments = normalizeProviderToolCall(call, prompt).arguments; } catch { normalizedArguments = call.arguments; }
+          validationEvidence.push(JSON.stringify({ type: errorCode, tool: call.name, originalArguments: sanitizeToolData(call.arguments), normalizedArguments: sanitizeToolData(normalizedArguments), repairAttempted: JSON.stringify(call.arguments) !== JSON.stringify(normalizedArguments), recoverable: errorCode === 'MALFORMED_ARGUMENTS', message, recovery: guidance }, null, 2));
           runtimeFailures.push(`Tool ${call.name} routing failed: ${message}`);
           loopGuard.record(call, await workspaceRevision(), { success: false, error: { code: 'TOOL_ROUTING_FAILED', message }, output: { recovery: guidance } });
         } finally {
@@ -158,8 +169,16 @@ export function createNativeAgentRuntime(dependencies: any): NativeAgentRuntime 
         return result.success ? bounded : `${bounded}\nRecovery guidance: ${runtimeToolRecoveryGuidance(result.toolName, result.error?.message ?? 'Tool execution failed.', availableTools)}`;
       });
       const evidence = [...resultEvidence, ...validationEvidence].join('\n\n');
+      const redirects = executionTask ? await taskRuntime.pendingRedirects(executionTask.taskId) : [];
+      const taskState = executionTask ? await taskRuntime.get(executionTask.taskId) : undefined;
+      if (taskState && ['paused', 'cancelled', 'completed'].includes(taskState.status)) {
+        modelContent = `Agent continuation stopped because task state is ${taskState.status}.`;
+        break;
+      }
       continuationHistory.push({ role: 'assistant', content: turn.content || 'I requested FORGE tools.' });
-      turn = await activeAgent.askWithTools(`Continue the original request using these bounded Tool Result records. Do not repeat completed tool calls. Do not claim a tool is missing when it appears in the runtime catalog. A failed file path is a scope or input failure, not proof that other tools are absent. file.* tools must stay workspace-relative; system paths require an appropriate advertised tool instead of ../ traversal. Runtime tool catalog for this turn: ${capabilityCatalog}. FORGE supplies execution identity and audit context internally.\n\n${evidence}`, continuationHistory, definitions);
+      const redirectText = redirects.length ? `\n\nNew task instructions from the user; apply them from this safe boundary:\n${redirects.map((entry: { instruction: string }) => `- ${entry.instruction}`).join('\n')}` : '';
+      turn = await activeAgent.askWithTools(`Continue the original request using these bounded Tool Result records. Do not repeat completed tool calls. Do not claim a tool is missing when it appears in the runtime catalog. file.* paths are governed by the configured filesystem scope. A failed path or call is not proof that other tools are absent. Correct malformed arguments and retry with a valid call when useful. Runtime tool catalog for this turn: ${capabilityCatalog}. FORGE supplies execution identity and audit context internally.${redirectText}\n\n${evidence}`, continuationHistory, definitions);
+      if (executionTask && redirects.length) await taskRuntime.acknowledgeRedirects(executionTask.taskId, redirects.map((entry: { eventId: string }) => entry.eventId));
       rememberSemanticContext(turn.context);
     }
     const summary = [...outcomes.map(({ request, result }) => `Tool ${request.toolName} ${result?.success ? 'succeeded' : 'failed'}${result?.error ? `: ${result.error.message}` : ''}.`), ...runtimeFailures].join('\n');
@@ -174,17 +193,20 @@ export function createNativeAgentRuntime(dependencies: any): NativeAgentRuntime 
     }
   };
   const runTaskStep = async (taskId: string): Promise<any> => {
-    const task = await taskRuntime.resume(taskId);
-    const step = task.steps.find((candidate: any) => candidate.id === task.currentStepId);
-    if (!step || task.status !== 'ready') return task;
-    const conversationId = task.lastActiveConversationId ?? task.originatingConversationId;
-    await runAgentTurn(conversationId, `Start the dependency-ready task step now. Use the required tool without supplying runtime IDs or audit metadata. Do not only describe the plan. Task: ${task.title}. Step: ${step.name}. Purpose: ${step.purpose}. Expected input: ${JSON.stringify(step.expectedInput ?? {})}. Verification: ${step.verificationCriteria.join('; ')}. When the observed evidence satisfies every criterion, request task.checkpoint using only its semantic fields; FORGE attaches the active task, step, and audit identities.`, { taskId: task.id, stepId: step.id });
-    const updated = await taskRuntime.get(taskId);
-    // A verified checkpoint may have made the next dependency-ready step
-    // executable in the same durable operation. Continue it automatically;
-    // Failed tools and reconciliation states stop here.
-    if (updated.status === 'ready' && updated.currentStepId && updated.currentStepId !== step.id) return runTaskStep(taskId);
-    return updated;
+    let task = await taskRuntime.resume(taskId);
+    let advancedSteps = 0;
+    while (task.status === 'ready' && task.currentStepId && (advancedSteps === 0 || settings.publicSettings().autonomousTaskContinuation)) {
+      const step = task.steps.find((candidate: any) => candidate.id === task.currentStepId);
+      if (!step) break;
+      advancedSteps += 1;
+      const priorStepId = step.id;
+      const conversationId = task.lastActiveConversationId ?? task.originatingConversationId;
+      await runAgentTurn(conversationId, `Start the dependency-ready task step now. Use the required tool without supplying runtime IDs or audit metadata. Do not only describe the plan. Task: ${task.title}. Step: ${step.name}. Purpose: ${step.purpose}. Expected input: ${JSON.stringify(step.expectedInput ?? {})}. Verification: ${step.verificationCriteria.join('; ')}. When the observed evidence satisfies every criterion, request task.checkpoint using only its semantic fields; FORGE attaches the active task, step, and audit identities.`, { taskId: task.id, stepId: step.id });
+      const updated = await taskRuntime.get(taskId);
+      if (updated.status !== 'ready' || !updated.currentStepId || updated.currentStepId === priorStepId) return updated;
+      task = updated;
+    }
+    return task;
   };
 
   return { runAgentTurn, runTaskStep };

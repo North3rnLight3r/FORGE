@@ -30,7 +30,7 @@ The Electron main process owns privileged operations. Preload exposes a typed al
 - **StorageService** owns `.forge/metadata.sqlite` and atomic persistence.
 - **Workspace Intelligence** collects and ranks evidence without requiring a completion.
 - **Agent runtime** reasons over a FORGE context packet and requests semantic tools.
-- **ToolRouter** validates/enriches requests, invokes services, bounds results, supports cancellation, and records outcomes.
+- **ToolRouter** normalizes and validates provider calls, applies persisted execution/network/filesystem policy, invokes services, bounds results, supports cancellation, and records outcomes.
 - **Platform adapters** implement native terminal, packaging, updater, and FORGE-OS differences without changing the shared workspace contract.
 
 Conversation deletion never silently deletes files, Git, tasks, memory, or semantic records. A provider switch does not change workspace ownership.
@@ -60,7 +60,7 @@ Conversation deletion never silently deletes files, Git, tasks, memory, or seman
 
 Context is bounded and ordered. Explicit tool results, current file content, Git state, task/checkpoint evidence, and recent observations have higher authority than optional semantic matches or durable historical memory. Semantic retrieval validates current source paths/revisions and fails closed to an empty semantic contribution.
 
-The default 32,000-token context budget is configurable. Embeddings are disabled on a fresh install and use an OpenAI-compatible provider only when enabled.
+The default 32,000-token context budget is configurable. Semantic context and auto-indexing default on; vector creation requires a working OpenAI-compatible embedding provider. Failures are represented in index state and runtime events, with optional bounded automatic repair.
 
 ## Agent runtime
 
@@ -70,9 +70,9 @@ Hermes detection, endpoint reachability, profile resolution, and progressive ski
 
 ## Tool execution and safety
 
-The current runtime intentionally has no FORGE approval/policy stage. Available registered calls with valid semantic inputs execute directly. Provider-authored internal IDs, task links, and reasons are discarded or replaced by FORGE-owned execution context.
+Execution mode and filesystem/network scope are persisted user settings. Disabled exposes no tools; Controlled exposes read operations and rejects mutations/processes; Allow All authorizes registered capabilities within selected filesystem and network scope without repeated prompts. Provider-authored internal IDs, task links, and reasons are discarded or replaced by FORGE-owned execution context. The Tooling UI consumes the ToolRouter capability catalog and generic schema runner rather than maintaining a second tool list.
 
-Safety/resource boundaries include root and realpath containment, schema/size limits, exact executable/argument arrays, filtered environments, URL/DNS/redirect validation, network-capability declarations, OS permissions, timeouts, cancellation, process-tree termination, atomic file replacement, collision refusal, backup/rollback metadata, dirty-editor protection, bounded/redacted output, and execution-state audits.
+Filesystem scopes are Workspace, Repository, Project Tree, Home, and Full user-accessible filesystem. Requested paths are canonicalized through realpath (including symlink targets) and checked against the configured scope; shell cwd uses the same policy after ToolRouter authorization. OS permissions remain authoritative. Safety/resource boundaries also include schema/size limits, exact executable/argument arrays, filtered environments, URL/DNS/redirect validation, network-capability declarations, timeouts, cancellation, process-tree termination, atomic file replacement, collision refusal, backup/rollback metadata, dirty-editor protection, bounded/redacted output, and execution-state audits.
 
 The principle is **bound resources, not agency**.
 

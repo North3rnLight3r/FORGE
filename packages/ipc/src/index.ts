@@ -31,7 +31,7 @@ export interface Goal { id: string; title: string; description?: string; status:
 export type TaskStatus = 'draft' | 'ready' | 'running' | 'waiting' | 'blocked' | 'paused' | 'failed' | 'cancelled' | 'completed';
 export type TaskStepStatus = 'pending' | 'running' | 'waiting' | 'blocked' | 'failed' | 'skipped' | 'completed';
 export type TaskResumabilityState = 'resumable' | 'reconcile-required' | 'not-resumable' | 'complete';
-export type TaskEventType = 'task.created' | 'task.started' | 'step.started' | 'step.waiting' | 'step.completed' | 'step.failed' | 'step.retried' | 'task.paused' | 'task.resumed' | 'task.blocked' | 'task.completed' | 'task.cancelled' | 'state.reconciled' | 'external.process.detected' | 'external.asset.verified' | 'handoff.generated';
+export type TaskEventType = 'task.created' | 'task.started' | 'step.started' | 'step.waiting' | 'step.completed' | 'step.failed' | 'step.retried' | 'task.paused' | 'task.resumed' | 'task.blocked' | 'task.completed' | 'task.cancelled' | 'task.redirected' | 'task.redirect.consumed' | 'state.reconciled' | 'external.process.detected' | 'external.asset.verified' | 'handoff.generated';
 export interface TaskRetryPolicy { maxAttempts: number; backoffMs: number; retryableErrorCodes: string[]; }
 export interface TaskStep {
   id: string; taskId: string; position: number; name: string; purpose: string; status: TaskStepStatus; riskTier: 0 | 1 | 2;
@@ -141,6 +141,18 @@ export interface UserSettings {
   embeddingModel: string;
   embeddingApiKeyConfigured: boolean;
   contextTokenBudget: number;
+  agentExecutionMode: 'disabled' | 'controlled' | 'allow-all';
+  filesystemScope: 'workspace' | 'repository' | 'project-tree' | 'home' | 'full';
+  projectTreeRoot: string;
+  networkAccess: { web: boolean; git: boolean; packageManager: boolean; general: boolean };
+  processMode: 'standard' | 'full-local-compute';
+  processTimeoutMs: number;
+  backgroundTaskTimeoutMs: number;
+  autonomousTaskContinuation: boolean;
+  autoRepairToolArguments: boolean;
+  backgroundTasksEnabled: boolean;
+  autoIndex: boolean;
+  autoRepairIndex: boolean;
 }
 
 export interface SettingsSaveRequest {
@@ -163,6 +175,18 @@ export interface SettingsSaveRequest {
   embeddingApiKey?: string;
   clearEmbeddingApiKey?: boolean;
   contextTokenBudget?: number;
+  agentExecutionMode?: UserSettings['agentExecutionMode'];
+  filesystemScope?: UserSettings['filesystemScope'];
+  projectTreeRoot?: string;
+  networkAccess?: UserSettings['networkAccess'];
+  processMode?: UserSettings['processMode'];
+  processTimeoutMs?: number;
+  backgroundTaskTimeoutMs?: number;
+  autonomousTaskContinuation?: boolean;
+  autoRepairToolArguments?: boolean;
+  backgroundTasksEnabled?: boolean;
+  autoIndex?: boolean;
+  autoRepairIndex?: boolean;
 }
 
 export interface ToolRequestView {
@@ -171,6 +195,20 @@ export interface ToolRequestView {
   predictedAffectedPaths: string[]; networkAccess: boolean; externalDataDescription?: string; diff?: string;
   state: 'requested' | 'running' | 'succeeded' | 'failed' | 'cancelled';
   requestedAt: number; updatedAt: number;
+}
+export interface ToolCapabilityView {
+  name: string;
+  purpose: string;
+  category: string;
+  sideEffect: string;
+  available: boolean;
+  unavailableReason?: string;
+  registered: boolean;
+  executorPresent: boolean;
+  providerVisible: boolean;
+  cancellable: boolean;
+  networkAccess: boolean;
+  inputSchema: Record<string, unknown>;
 }
 export interface ToolResultView { requestId: string; toolName: string; success: boolean; output?: unknown; affectedPaths: string[]; diff?: string; warnings: string[]; error?: { code: string; message: string; details?: string }; rollback?: { available: boolean; instructions?: string; backupPath?: string }; exitCode?: number | null; durationMs: number; truncated?: boolean; cancelled?: boolean; }
 export interface ActionLogView { id: string; timestamp: number; workspaceId: string; conversationId: string; modelId: string; toolName: string; sanitizedInputs: unknown; executionState: string; executionDurationMs: number; success: boolean; result: unknown; resultSummary: string; affectedPaths: string[]; exitCode?: number | null; rollback?: ToolResultView['rollback']; }
@@ -292,9 +330,9 @@ export const IPC_CHANNELS = {
   agentConversationsState: 'agent.conversations.state', agentConversationsList: 'agent.conversations.list', agentConversationsAppend: 'agent.conversations.append',
   agentConversationCreate: 'agent.conversation.create', agentConversationSelect: 'agent.conversation.select', agentConversationRename: 'agent.conversation.rename', agentConversationClear: 'agent.conversation.clear', agentConversationDelete: 'agent.conversation.delete', agentConversationsClearAll: 'agent.conversations.clearAll',
   agentMemoriesList: 'agent.memories.list', agentMemoriesStats: 'agent.memories.stats', agentMemoriesDelete: 'agent.memories.delete', agentMemoriesClear: 'agent.memories.clear', agentMemoriesReindex: 'agent.memories.reindex'
-  , toolRequestsList: 'tool.requests.list', toolRequestCancel: 'tool.request.cancel', toolActionsList: 'tool.actions.list', editorDirtyUpdate: 'editor.dirty.update',
+  , toolRequestsList: 'tool.requests.list', toolRequestCancel: 'tool.request.cancel', toolActionsList: 'tool.actions.list', toolCatalog: 'tool.catalog', toolExecute: 'tool.execute', editorDirtyUpdate: 'editor.dirty.update', agentStopAll: 'agent.stop.all',
   terminalCreate: 'terminal.create', terminalList: 'terminal.list', terminalInput: 'terminal.input', terminalResize: 'terminal.resize', terminalTerminate: 'terminal.terminate', terminalRestart: 'terminal.restart', terminalRemove: 'terminal.remove',
-  tasksList: 'tasks.list', tasksGet: 'tasks.get', tasksCreate: 'tasks.create', tasksUpdate: 'tasks.update', tasksCreateRelease: 'tasks.create.release', tasksResume: 'tasks.resume', tasksPause: 'tasks.pause', tasksCancel: 'tasks.cancel', tasksDelete: 'tasks.delete', tasksRetryStep: 'tasks.retry.step', tasksHandoff: 'tasks.handoff',
+  tasksList: 'tasks.list', tasksGet: 'tasks.get', tasksCreate: 'tasks.create', tasksUpdate: 'tasks.update', tasksCreateRelease: 'tasks.create.release', tasksResume: 'tasks.resume', tasksPause: 'tasks.pause', tasksCancel: 'tasks.cancel', tasksRedirect: 'tasks.redirect', tasksDelete: 'tasks.delete', tasksRetryStep: 'tasks.retry.step', tasksHandoff: 'tasks.handoff',
   browserNavigate: 'browser.navigate', browserLayout: 'browser.layout', browserBack: 'browser.back', browserForward: 'browser.forward', browserReload: 'browser.reload',
   browserHome: 'browser.home', browserTabNew: 'browser.tab.new', browserTabClose: 'browser.tab.close', browserTabSelect: 'browser.tab.select', browserBookmarkAdd: 'browser.bookmark.add', browserBookmarkRemove: 'browser.bookmark.remove',
   forgeLiveStart: 'forge-live.start', forgeLiveStop: 'forge-live.stop', forgeLiveRestart: 'forge-live.restart', forgeLiveStatus: 'forge-live.status', forgeLiveOpenPreview: 'forge-live.open-preview', forgeLiveCopyUrl: 'forge-live.copy-url',
@@ -312,14 +350,14 @@ export interface IPCRequestMap {
   'agent.conversations.state': { conversationId?: string } | undefined; 'agent.conversations.list': { conversationId?: string } | undefined; 'agent.conversations.append': { conversationId?: string; entries: Array<{ role: ConversationEntry['role']; content: string }> };
   'agent.conversation.create': { title?: string }; 'agent.conversation.select': { conversationId: string }; 'agent.conversation.rename': { conversationId: string; title: string }; 'agent.conversation.clear': { conversationId: string }; 'agent.conversation.delete': { conversationId: string }; 'agent.conversations.clearAll': undefined;
   'agent.memories.list': undefined; 'agent.memories.stats': undefined; 'agent.memories.delete': { id: string }; 'agent.memories.clear': undefined; 'agent.memories.reindex': undefined;
-  'tool.requests.list': undefined; 'tool.request.cancel': { requestId: string };
+  'tool.requests.list': undefined; 'tool.request.cancel': { requestId: string }; 'tool.catalog': undefined; 'tool.execute': { requestId: string; toolName: string; arguments: unknown }; 'agent.stop.all': undefined;
   'tool.actions.list': { conversationId?: string; toolName?: string; success?: boolean; from?: number; to?: number } | undefined; 'editor.dirty.update': { paths: string[] };
   'browser.navigate': { url: string }; 'browser.layout': BrowserLayoutRequest; 'browser.back': undefined; 'browser.forward': undefined; 'browser.reload': undefined;
   'browser.home': undefined; 'browser.tab.new': undefined; 'browser.tab.close': { tabId: string }; 'browser.tab.select': { tabId: string }; 'browser.bookmark.add': undefined; 'browser.bookmark.remove': { bookmarkId: string };
   'forge-live.start': undefined; 'forge-live.stop': undefined; 'forge-live.restart': undefined; 'forge-live.status': undefined; 'forge-live.open-preview': undefined; 'forge-live.copy-url': undefined;
   'forge-os.context': undefined; 'forge-os.applications': undefined; 'forge-os.application.launch': { id: string }; 'forge-os.overview': undefined; 'forge-os.session.action': { action: 'lock' | 'logout' | 'restart' | 'shutdown' };
   'terminal.create': { workingDirectory?: string; columns?: number; rows?: number }; 'terminal.list': undefined; 'terminal.input': { sessionId: string; data: string }; 'terminal.resize': { sessionId: string; columns: number; rows: number }; 'terminal.terminate': { sessionId: string }; 'terminal.restart': { sessionId: string }; 'terminal.remove': { sessionId: string };
-  'tasks.list': undefined; 'tasks.get': { taskId: string }; 'tasks.create': TaskDraft; 'tasks.update': { taskId: string; draft: TaskDraft }; 'tasks.create.release': { version: string; originatingConversationId?: string }; 'tasks.resume': { taskId: string }; 'tasks.pause': { taskId: string; reason: string }; 'tasks.cancel': { taskId: string; reason: string; trackingOnly: boolean }; 'tasks.delete': { taskId: string }; 'tasks.retry.step': { taskId: string; stepId: string }; 'tasks.handoff': { taskId: string };
+  'tasks.list': undefined; 'tasks.get': { taskId: string }; 'tasks.create': TaskDraft; 'tasks.update': { taskId: string; draft: TaskDraft }; 'tasks.create.release': { version: string; originatingConversationId?: string }; 'tasks.resume': { taskId: string }; 'tasks.pause': { taskId: string; reason: string }; 'tasks.cancel': { taskId: string; reason: string; trackingOnly: boolean }; 'tasks.redirect': { taskId: string; instruction: string }; 'tasks.delete': { taskId: string }; 'tasks.retry.step': { taskId: string; stepId: string }; 'tasks.handoff': { taskId: string };
 }
 
 export interface IPCResponseMap {
@@ -333,13 +371,13 @@ export interface IPCResponseMap {
   'agent.conversations.state': ConversationState; 'agent.conversations.list': ConversationEntry[]; 'agent.conversations.append': void;
   'agent.conversation.create': ConversationState; 'agent.conversation.select': ConversationState; 'agent.conversation.rename': ConversationState; 'agent.conversation.clear': ConversationState; 'agent.conversation.delete': ConversationState; 'agent.conversations.clearAll': ConversationState;
   'agent.memories.list': WorkspaceKnowledgeRecord[]; 'agent.memories.stats': WorkspaceMemoryStats; 'agent.memories.delete': void; 'agent.memories.clear': { deleted: number }; 'agent.memories.reindex': void;
-  'tool.requests.list': ToolRequestView[]; 'tool.request.cancel': boolean; 'tool.actions.list': ActionLogView[]; 'editor.dirty.update': void;
+  'tool.requests.list': ToolRequestView[]; 'tool.request.cancel': boolean; 'tool.actions.list': ActionLogView[]; 'tool.catalog': ToolCapabilityView[]; 'tool.execute': ToolResultView; 'editor.dirty.update': void; 'agent.stop.all': { toolsCancelled: number; tasksCancelled: number };
   'browser.navigate': BrowserStateView; 'browser.layout': BrowserStateView; 'browser.back': BrowserStateView; 'browser.forward': BrowserStateView; 'browser.reload': BrowserStateView;
   'browser.home': BrowserStateView; 'browser.tab.new': BrowserStateView; 'browser.tab.close': BrowserStateView; 'browser.tab.select': BrowserStateView; 'browser.bookmark.add': BrowserStateView; 'browser.bookmark.remove': BrowserStateView;
   'forge-live.start': unknown; 'forge-live.stop': unknown; 'forge-live.restart': unknown; 'forge-live.status': unknown; 'forge-live.open-preview': BrowserStateView; 'forge-live.copy-url': unknown;
   'forge-os.context': ForgeOsContext; 'forge-os.applications': DesktopApplication[]; 'forge-os.application.launch': undefined; 'forge-os.overview': SystemOverview; 'forge-os.session.action': undefined;
   'terminal.create': TerminalSessionView; 'terminal.list': TerminalSessionView[]; 'terminal.input': void; 'terminal.resize': void; 'terminal.terminate': void; 'terminal.restart': TerminalSessionView; 'terminal.remove': void;
-  'tasks.list': Task[]; 'tasks.get': Task; 'tasks.create': Task; 'tasks.update': Task; 'tasks.create.release': Task; 'tasks.resume': Task; 'tasks.pause': Task; 'tasks.cancel': Task; 'tasks.delete': void; 'tasks.retry.step': Task; 'tasks.handoff': TaskHandoff;
+  'tasks.list': Task[]; 'tasks.get': Task; 'tasks.create': Task; 'tasks.update': Task; 'tasks.create.release': Task; 'tasks.resume': Task; 'tasks.pause': Task; 'tasks.cancel': Task; 'tasks.redirect': Task; 'tasks.delete': void; 'tasks.retry.step': Task; 'tasks.handoff': TaskHandoff;
 }
 
 export type IPCChannel = keyof IPCRequestMap;

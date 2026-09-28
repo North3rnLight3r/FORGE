@@ -112,7 +112,7 @@ export class ToolRegistry {
 }
 
 export class ToolValidationError extends Error {
-  constructor(public readonly code: 'UNKNOWN_TOOL' | 'MALFORMED_ARGUMENTS' | 'MALFORMED_OUTPUT', message: string) { super(message); }
+  constructor(public readonly code: 'UNKNOWN_TOOL' | 'MALFORMED_ARGUMENTS' | 'MALFORMED_OUTPUT' | 'POLICY_FAILURE', message: string) { super(message); }
 }
 
 export { z };

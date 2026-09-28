@@ -1,4 +1,4 @@
-import { readFile } from 'node:fs/promises';
+import { readdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, it, expect } from 'vitest';
@@ -25,6 +25,49 @@ describe('IPC contract', () => {
     expect(preloadSource).toContain('ipcRenderer.invoke(channel, request)');
     for (const [key, channel] of channels) {
       expect(mainSource, `${channel} (${key}) is missing a main-process handler`).toMatch(new RegExp(`register\\(IPC_CHANNELS\\.${key}\\s*,`));
+    }
+  });
+
+  it('gives every IPC capability a renderer surface or a documented intentional exception', async () => {
+    const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
+    const rendererRoot = path.join(repoRoot, 'apps/desktop/src/renderer/src');
+    const readRendererSources = async (directory: string): Promise<string[]> => {
+      const entries = await readdir(directory, { withFileTypes: true });
+      return (await Promise.all(entries.map(async (entry) => entry.isDirectory()
+        ? readRendererSources(path.join(directory, entry.name))
+        : /\.(ts|tsx)$/.test(entry.name) ? [await readFile(path.join(directory, entry.name), 'utf8')] : []))).flat();
+    };
+    const [rendererSource, audit] = await Promise.all([
+      readRendererSources(rendererRoot).then((sources) => sources.join('\n')),
+      readFile(path.join(repoRoot, 'docs/IPC_UI_CAPABILITY_AUDIT.md'), 'utf8')
+    ]);
+    const exceptions: Record<string, string> = {
+      'markdown.parse': 'The editor renders Markdown locally',
+      'git.branches': 'No branch-switching UI is intentionally exposed',
+      'git.log': 'The dashboard supplies the bounded recent-commit view',
+      'git.unstage': 'The current source-control view only stages files',
+      'meta.goal.update': 'Goals are currently summary-only after creation',
+      'meta.goal.delete': 'Goals are currently summary-only after creation',
+      'settings.platform.capabilities': 'The settings UI presents runtime-specific availability',
+      'context.health.get': 'The intelligence panel receives the same health fields through meta.dashboard',
+      'agent.explainProject': 'The chat composer is the single user-directed entry point',
+      'agent.reviewChanges': 'The chat composer is the single user-directed entry point',
+      'agent.conversations.append': 'Conversation mutation is owned by agent.ask and the conversation controls',
+      'terminal.remove': 'Terminal sessions remain available for their observable lifecycle',
+      'tasks.get': 'The task panel uses the bounded workspace task list',
+      'tasks.cancel': 'Stop All provides the currently exposed cancellation control',
+      'tasks.redirect': 'The Agent Actions runner exposes task.redirect with task selection',
+      'tasks.retry.step': 'Run / Resume Task owns retry progression',
+      'forge-live.restart': 'Go Live exposes start and stop while running',
+      'forge-live.copy-url': 'Open Preview is the exposed live-preview action',
+      'forge-os.session.action': 'FORGE-OS routes session controls through reviewed desktop launchers'
+    };
+    for (const channel of Object.values(IPC_CHANNELS)) {
+      const quoted = new RegExp(`['"]${channel.replace('.', '\\.')}['"]`);
+      if (quoted.test(rendererSource)) continue;
+      expect(exceptions, `${channel} has no renderer invocation or intentional exception`).toHaveProperty(channel);
+      expect(audit, `${channel} exception is absent from the audit`).toContain(`\`${channel}\``);
+      expect(audit, `${channel} exception reason drifted from the audit`).toContain(exceptions[channel]);
     }
   });
 

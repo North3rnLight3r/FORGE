@@ -4,7 +4,7 @@ This manual describes the current `2.5.0-beta` source line. Published `v2.5.0-be
 
 ## 1. Open a workspace
 
-Choose **Open workspace** to select a project folder or **Home** to use the platform home directory. FORGE opens the directory in place and creates `<workspace>/.forge/metadata.sqlite` for conversations, tasks, memory, layout, Browser state, context records, and action history.
+Choose **Open workspace** to select a project folder or **Home** to use the platform home directory. FORGE reopens the last successful workspace on launch. It opens the directory in place and creates `<workspace>/.forge/metadata.sqlite` for conversations, tasks, memory, layout, Browser state, context records, and action history.
 
 Opening another workspace stops workspace-scoped indexing, terminal/process services, Browser tabs, and FORGE Live before the new services initialize. If an Electron response payload is dropped after the folder opens, the renderer reloads canonical `workspace.info` instead of switching to a null workspace.
 
@@ -14,9 +14,9 @@ Opening another workspace stops workspace-scoped indexing, terminal/process serv
 - Use **New file**, **New folder**, the Explorer context menu, or keyboard shortcuts to create, rename, copy, paste, and delete entries.
 - `Ctrl/Cmd+O` opens a workspace; `Ctrl/Cmd+S` saves; `F2` renames; normal Monaco undo/redo shortcuts apply.
 - Text files open in Monaco. Markdown supports Edit and Preview. Images, audio, and video use bounded media previews. Binary and executable files show metadata rather than editable text.
-- Hidden/generated directories such as `.git`, `node_modules`, build output, and `.forge` are excluded from normal recursive discovery. Protected or vanished paths are skipped when appropriate rather than failing the entire workspace.
+- The Explorer shows hidden files by default. Use **Hidden** to toggle them. Protected or vanished paths are skipped when appropriate rather than failing the entire workspace.
 
-Workspace APIs reject absolute paths, traversal, and resolved symlink escapes.
+Explorer and editor operations remain rooted in the selected project. Agent `file.*` tools can use absolute, home, parent, and hidden paths outside that project.
 
 ## 3. Source control
 
@@ -34,11 +34,22 @@ FORGE builds a bounded context packet from current documentation, source, Git, t
 
 Native FORGE is the active runtime unless a requested Hermes profile has both a reachable endpoint and a compatible structured bridge. Current Hermes support detects the CLI/endpoint and discovers skill metadata; it does not hand Hermes raw filesystem or shell authority.
 
-The current runtime has no FORGE approval queue, Run-once cards, risk tiers, or session grants. A registered and available tool call with valid semantic arguments executes through ToolRouter. Agent Actions shows queued/running operations, cancellation where supported, and durable execution records.
+The agent accepts ordinary requests; do not write tool names or JSON. For example: “Read `./references.txt`, preserve its text, reformat it as readable Markdown in `references.md`, verify the new file, then remove the original.” FORGE offers registered tools to the model, repairs deterministic argument conflicts, validates the call, executes it under the selected policy, and returns observed results. Review the result before asking it to continue if a step is destructive.
+
+Open **Settings → Tooling and autonomy** to choose:
+
+- **Disabled** hides and rejects agent tool execution.
+- **Controlled** permits read-only tools; mutations, processes, and network writes require switching to **Allow All**.
+- **Allow All** authorizes registered operations within the selected filesystem scope and enabled network capabilities without per-action confirmation. Auditing, cancellation, backups, secret redaction, and OS permissions remain active.
+- **Filesystem scope** selects Workspace, Repository, Project Tree, Home, or Full user-accessible filesystem. Project Tree requires its root path. Paths and symlinks are resolved before scope checks.
+- **Network access** independently enables Web, Git, Package Manager, or General Network. Web research also remains opt-in in Settings. Workspace source is never uploaded to arbitrary services automatically.
+- **Process mode** and the timeout settings control local command duration; background process output is stored under `.forge/task-output`.
+
+The **Tooling** view shows the runtime-owned capability catalog, exact unavailable reasons, schemas, live requests, and persistent action history. Select an available capability in **Run / Test Capability** to inspect its schema, supply JSON arguments, execute it through the same audited router, and cancel it while running. **Stop All** cancels active agent tool requests and tracked task processes. A running request also has its own **Cancel** control.
 
 Controls that remain enforced include:
 
-- workspace root and symlink containment;
+- operating-system file permissions;
 - typed schemas and FORGE-owned execution identity;
 - exact executable/argument handling and filtered environments;
 - URL, DNS, protocol, and configured network-capability checks;
@@ -54,11 +65,13 @@ Tasks belong to the workspace and survive conversations and agent changes. A tas
 
 Use **New task** for a custom workflow or **Release workflow** for a generated release checklist. **Run / Resume Task** reconciles saved state with current Git, files, processes, and external evidence. Missing completion evidence leaves a step waiting or blocked; another model's claim is never sufficient.
 
-Pause, retry, cancel, delete, or copy a handoff from the Tasks panel. Deleting a conversation does not delete tasks or memory. Deleting a task removes that task and its checkpoints but not project files or Git history.
+Pause, resume, retry, cancel, delete, or copy a handoff from the Tasks panel. To redirect a running task, open **Tooling → Run / Test Capability**, select `task.redirect`, and provide its task ID and the instruction in the JSON arguments; the task stores it until the agent reaches a safe continuation boundary. **Stop All** also cancels tracked task processes. Deleting a conversation does not delete tasks or memory. Deleting a task removes that task and its checkpoints but not project files or Git history.
 
 ## 7. Terminal
 
-The Terminal panel creates a real PTY rooted in the workspace. It is user-controlled and visually separate from agent-requested `shell.run`. Terminal output is not automatically indexed as durable memory.
+The Terminal panel creates a real PTY initially rooted in the workspace, and commands may change to any accessible directory. Agent `shell.run` can also use an absolute or parent working directory. Terminal output is not automatically indexed as durable memory.
+
+On macOS, grant the installed **FORGE.app** Full Disk Access in **System Settings → Privacy & Security → Full Disk Access** and relaunch it to reach privacy-protected locations. This is a macOS user setting; FORGE cannot grant it to itself. Full Disk Access does not provide administrator identity or override file ownership and system integrity protections.
 
 FORGE passes a small non-secret environment so common user CLIs can resolve without copying API keys into the PTY. On Windows it uses the native command shell/ConPTY path; on Unix-like systems it uses the configured login-shell behavior. Restart recreates an exited session, and Cancel terminates the process tree.
 
@@ -74,9 +87,9 @@ For a workspace containing `index.html`, choose **Go Live** and then **Open Prev
 
 ## 10. Semantic context
 
-Semantic context is off on fresh installs. To enable it, configure an OpenAI-compatible embedding endpoint and model, validate the model, then rebuild the index. Defaults are Ollama at `http://127.0.0.1:11434/v1` with `qwen3-embedding:0.6b` and a 32,000-token context budget.
+Semantic context and automatic indexing are enabled by default. Configure an OpenAI-compatible embedding endpoint/model in Settings, validate the model, then use **Rebuild semantic index** if the status is empty or degraded. Defaults are Ollama at `http://127.0.0.1:11434/v1` with `qwen3-embedding:0.6b` and a 32,000-token context budget. A reachable embedding provider is required for semantic vectors; direct file/Git tools still work when embedding is unavailable.
 
-Embedding failure degrades to non-semantic context; it does not disable file/Git tools or Native FORGE. Rebuild is explicit. Changed paths and durable task/memory mutations refresh an enabled index incrementally.
+Workspace open, file changes, and task/memory changes refresh the index incrementally while **Automatically index workspace knowledge** is enabled. **Automatically repair a degraded semantic index** permits one bounded rebuild attempt after a reported degraded/rebuild-required state. Check the real record counts, model, dimensions, last index time, and error in Settings → Embedding and semantic memory; refresh and rebuild are separate operations.
 
 ## 11. Updates and installation
 
