@@ -3874,11 +3874,12 @@ function providerToolNames(tools) {
   return names;
 }
 class OpenAIProvider {
-  id = "openai";
+  id;
   apiKey;
   baseUrl;
   model;
   constructor(opts) {
+    this.id = opts?.id ?? "openai";
     this.apiKey = opts?.apiKey ?? process.env.OPENAI_API_KEY;
     this.baseUrl = this.normalizeBaseUrl(opts?.baseUrl ?? process.env.OPENAI_BASE_URL ?? DEFAULT_BASE_URL);
     this.model = this.normalizeModel(opts?.model ?? process.env.OPENAI_MODEL ?? DEFAULT_OPENAI_MODEL);
@@ -4106,6 +4107,101 @@ class OpenAIProvider {
     return /^gpt-5\.6(?:-|$)/i.test(model);
   }
 }
+const DEFAULT_HERMES_ENDPOINT$1 = "http://127.0.0.1:11434/v1";
+const DEFAULT_HERMES_MODEL = "llama3.2:3b";
+class HermesBridge {
+  id = "hermes";
+  provider;
+  configuration;
+  constructor(configuration = {}) {
+    this.configuration = this.defaults(configuration);
+    this.provider = new OpenAIProvider({
+      id: "hermes",
+      apiKey: this.configuration.apiKey,
+      baseUrl: this.configuration.endpoint,
+      model: this.configuration.model
+    });
+  }
+  configure(configuration) {
+    this.configuration = this.defaults(configuration);
+    this.provider.configure({
+      apiKey: this.configuration.apiKey,
+      baseUrl: this.configuration.endpoint,
+      model: this.configuration.model
+    });
+  }
+  endpoint() {
+    return this.configuration.endpoint;
+  }
+  model() {
+    return this.configuration.model;
+  }
+  async isConfigured() {
+    return this.provider.isConfigured();
+  }
+  async chat(messages, model) {
+    return this.provider.chat(messages, model ?? this.model());
+  }
+  async chatWithTools(messages, tools, model) {
+    return this.provider.chatWithTools(messages, tools, model ?? this.model());
+  }
+  async probe() {
+    try {
+      const validation = await this.provider.validateModel(this.model());
+      return { reachable: true, modelAvailable: validation.exists, model: validation.model };
+    } catch {
+      return { reachable: false, modelAvailable: false, model: this.model() };
+    }
+  }
+  defaults(configuration) {
+    return {
+      endpoint: configuration.endpoint?.trim() || process.env.FORGE_HERMES_ENDPOINT || DEFAULT_HERMES_ENDPOINT$1,
+      model: configuration.model?.trim() || process.env.FORGE_HERMES_MODEL || process.env.FORGE_OLLAMA_MODEL || process.env.OPENAI_MODEL || DEFAULT_HERMES_MODEL,
+      apiKey: configuration.apiKey?.trim() || process.env.FORGE_HERMES_API_KEY || void 0
+    };
+  }
+}
+function intelligenceLayer(options) {
+  const runtimeLabel = options.runtime === "hermes" ? "Hermes through the configured OpenAI-compatible endpoint" : "the native FORGE provider";
+  const modelLabel = options.model?.trim() ? ` Active model: ${options.model.trim()}.` : "";
+  return `FORGE intelligence layer — runtime: ${runtimeLabel}.${modelLabel}
+
+Identity and personality:
+- Be a calm, capable, curious engineering partner: direct, warm, technically precise, and candid about uncertainty.
+- Preserve the user's intent and momentum. Ask for clarification only when a safe, evidence-based assumption cannot resolve the ambiguity.
+- Prefer useful progress, concrete evidence, and reversible actions over speculation, ceremony, or generic advice.
+
+Reasoning discipline:
+- Understand the requested outcome and constraints before acting.
+- Form a short internal plan, then inspect the relevant current evidence before making claims.
+- Separate observed facts, well-supported inferences, assumptions, and open risks.
+- Decompose complex work into dependency-aware steps; after every meaningful action, check its result before continuing.
+- Use the smallest sufficient tool call, preserve existing user work, and do not repeat an unchanged failed call.
+- Treat direct tool results, current files, and current Git state as authoritative over memory or model priors.
+- For code and operational tasks, trace callers, configuration, tests, packaging, and runtime behavior instead of stopping at the first plausible file.
+- Finish with a concise result, remaining risk, and the next safe action when one is needed.
+
+Tool and safety boundary:
+- FORGE owns workspace state, memory, task checkpoints, permissions, execution, audit records, and cancellation for both native and Hermes runs.
+- Request advertised tools using their semantic arguments. Never invent a successful tool result, file change, commit, build, deployment, or external message.
+- A tool failure is evidence about that invocation, not proof that the tool is unavailable. Correct malformed arguments when the error provides a safe path.
+- Never bypass FORGE's ToolRouter with direct filesystem, shell, browser, credential, or network execution.
+- Do not expose hidden chain-of-thought. Give the user the concise rationale, evidence, decisions, and verification they need.
+
+Provider interchangeability:
+- Native FORGE and Hermes use the same context packet, model-facing tool schemas, continuation loop, and ToolRouter.
+- Ollama's local OpenAI-compatible endpoint is a transport choice, not a new authority. Switching runtime must not change workspace scope, policy, audit, or tool semantics.`;
+}
+function withIntelligenceLayer(baseSystemPrompt, options) {
+  return `${baseSystemPrompt.trim()}
+
+${intelligenceLayer(options)}`;
+}
+function intelligenceMessages(messages, options) {
+  const first = messages[0];
+  if (first?.role !== "system") return [{ role: "system", content: intelligenceLayer(options) }, ...messages];
+  return [{ ...first, content: withIntelligenceLayer(first.content, options) }, ...messages.slice(1)];
+}
 class Agent {
   constructor(provider, contextBuilder2, memoryRetriever2) {
     this.provider = provider;
@@ -4140,7 +4236,11 @@ class Agent {
       ...boundedHistory,
       { role: "user", content: question }
     ];
-    return { messages, memories, context };
+    return {
+      messages: intelligenceMessages(messages, { runtime: this.provider.id === "hermes" ? "hermes" : "native" }),
+      memories,
+      context
+    };
   }
   async ask(question, history = []) {
     return (await this.askWithContext(question, history)).content;
@@ -7293,6 +7393,15 @@ class UpdaterService {
   }
 }
 const defaultBaseUrl = "https://api.openai.com/v1";
+function environmentRuntime() {
+  return process.env.FORGE_AGENT_RUNTIME === "hermes" ? "hermes" : "native";
+}
+function environmentHermesEndpoint() {
+  return process.env.FORGE_HERMES_ENDPOINT?.trim() || (environmentRuntime() === "hermes" ? DEFAULT_HERMES_ENDPOINT$1 : "");
+}
+function environmentModel() {
+  return process.env.OPENAI_MODEL?.trim() || process.env.FORGE_HERMES_MODEL?.trim() || (environmentRuntime() === "hermes" ? DEFAULT_HERMES_MODEL : DEFAULT_OPENAI_MODEL);
+}
 class SettingsService {
   data = {};
   settingsPath = "";
@@ -7311,16 +7420,16 @@ class SettingsService {
   publicSettings() {
     return {
       apiBaseUrl: this.data.apiBaseUrl ?? process.env.OPENAI_BASE_URL ?? defaultBaseUrl,
-      apiModel: this.data.apiModel ?? process.env.OPENAI_MODEL ?? DEFAULT_OPENAI_MODEL,
+      apiModel: this.data.apiModel ?? environmentModel(),
       apiKeyConfigured: Boolean(this.data.apiKey || process.env.OPENAI_API_KEY),
       githubUsername: this.data.githubUsername ?? "",
       githubTokenConfigured: Boolean(this.data.githubToken),
       secureStorageAvailable: this.encryptionAvailable,
       webResearchEnabled: this.data.webResearchEnabled === true,
       updateChannel: normalizeUpdateChannel(this.data.updateChannel),
-      agentRuntime: this.data.agentRuntime === "hermes" ? "hermes" : "native",
-      hermesCommand: this.data.hermesCommand ?? "",
-      hermesEndpoint: this.data.hermesEndpoint ?? "",
+      agentRuntime: this.data.agentRuntime ?? environmentRuntime(),
+      hermesCommand: this.data.hermesCommand ?? process.env.FORGE_HERMES_COMMAND ?? "",
+      hermesEndpoint: this.data.hermesEndpoint ?? environmentHermesEndpoint(),
       embeddingEnabled: this.data.embeddingEnabled !== false,
       embeddingProvider: "openai-compatible",
       embeddingBaseUrl: this.data.embeddingBaseUrl ?? process.env.FORGE_EMBEDDING_BASE_URL ?? DEFAULT_EMBEDDING_BASE_URL,
@@ -7399,7 +7508,7 @@ class SettingsService {
     return {
       apiKey: overrides.apiKey?.trim() || (this.data.apiKey ? await this.decrypt(this.data.apiKey) : process.env.OPENAI_API_KEY),
       baseUrl: this.validateUrl(overrides.baseUrl || this.data.apiBaseUrl || process.env.OPENAI_BASE_URL || defaultBaseUrl),
-      model: overrides.model?.trim() || this.data.apiModel || process.env.OPENAI_MODEL || DEFAULT_OPENAI_MODEL
+      model: overrides.model?.trim() || this.data.apiModel || environmentModel()
     };
   }
   async embeddingConfiguration(overrides = {}) {
@@ -7437,7 +7546,7 @@ class SettingsService {
     return normalizeUpdateChannel(this.data.updateChannel);
   }
   hermesConfiguration() {
-    return { command: this.data.hermesCommand, endpoint: this.data.hermesEndpoint };
+    return { command: this.data.hermesCommand ?? process.env.FORGE_HERMES_COMMAND, endpoint: this.data.hermesEndpoint ?? environmentHermesEndpoint() };
   }
   validateUrl(value) {
     const parsed = new URL(value.trim());
@@ -10986,12 +11095,14 @@ class ForgeOsService {
   }
 }
 const execFile = promisify(execFile$1);
+const DEFAULT_HERMES_ENDPOINT = "http://127.0.0.1:11434/v1";
 function normalizePlatform(value) {
   return ["linux", "darwin", "win32"].includes(value) ? value : "other";
 }
 function hermesIntegrationMode(platform2, status) {
   if (status?.availability !== "available") return "unavailable";
-  return normalizePlatform(platform2) === "linux" ? "acp" : status.endpointReachable ? "headless-http" : "unavailable";
+  if (status.endpointReachable === true) return "headless-http";
+  return normalizePlatform(platform2) === "linux" ? "acp" : "unavailable";
 }
 function platformCapabilities(input) {
   const platform2 = normalizePlatform(input.platform ?? process.platform);
@@ -11005,7 +11116,7 @@ class HermesRuntimeDetector {
     const environment = options.environment ?? process.env;
     const homeDirectory = options.homeDirectory ?? homedir();
     const configuredRoot = environment.HERMES_HOME?.trim();
-    const endpoint = normalizeEndpoint(options.endpoint);
+    const endpoint = normalizeEndpoint(options.endpoint ?? environment.FORGE_HERMES_ENDPOINT ?? (environment.FORGE_AGENT_RUNTIME === "hermes" ? DEFAULT_HERMES_ENDPOINT : void 0));
     const execute = options.execute ?? ((file, args, executionOptions) => execFile(file, args, executionOptions));
     const fetcher = options.fetcher ?? fetch;
     let version;
@@ -11023,7 +11134,8 @@ class HermesRuntimeDetector {
     let endpointReachable = null;
     if (endpoint) {
       try {
-        const response = await fetcher(endpoint, { method: "HEAD", signal: AbortSignal.timeout(4e3) });
+        const modelsEndpoint = `${endpoint.replace(/\/$/, "")}/models`;
+        const response = await fetcher(modelsEndpoint, { method: "GET", signal: AbortSignal.timeout(4e3) });
         endpointReachable = response.ok || response.status === 401 || response.status === 403;
       } catch {
         endpointReachable = false;
@@ -11045,12 +11157,12 @@ class HermesRuntimeDetector {
     };
     if (endpointReachable) return {
       kind: "hermes",
-      availability: "degraded",
+      availability: "available",
       command,
       endpoint,
       endpointReachable,
       skillRoots: discoveredRoots,
-      message: "The configured Hermes endpoint responded, but the local Hermes CLI was not found. FORGE will keep using the native runtime until a supported headless bridge is configured."
+      message: "The configured Hermes-compatible endpoint is reachable. FORGE will use the shared native ToolRouter through the Hermes bridge."
     };
     return {
       kind: "hermes",
@@ -11064,7 +11176,8 @@ class HermesRuntimeDetector {
   }
 }
 function resolveAgentRuntime(requested, status, bridgeAvailable = false) {
-  const active = requested === "hermes" && status?.availability === "available" && bridgeAvailable ? "hermes" : "native";
+  const endpointBridgeAvailable = status?.endpointReachable === true;
+  const active = requested === "hermes" && status?.availability === "available" && (bridgeAvailable || endpointBridgeAvailable) ? "hermes" : "native";
   return { kind: active, requested, active, status };
 }
 async function discoverSkills(roots) {
@@ -11175,8 +11288,8 @@ function detachBrowserView() {
 function appBuildInfo() {
   return {
     ...buildReleaseIdentity(app.getVersion(), app.isPackaged),
-    commit: "fb2b3daae360270b67688b210aec9f8bc74469a0",
-    buildDate: "2026-10-03T00:57:15.226Z",
+    commit: "e16a498e79acba0fb29fb6e1f6e7b492f84afa29",
+    buildDate: "2026-10-02T23:44:28.059Z",
     runtime: app.isPackaged ? "packaged" : "development",
     rendererSource,
     platform: process.platform,
@@ -11207,15 +11320,15 @@ const memoryService = new MemoryService(storage);
 const memoryRetriever = new MemoryRetriever(memoryService);
 const memoryIndexer = new MemoryIndexer(memoryService, workspace);
 const agent = new Agent(aiProvider, intelligence, memoryRetriever);
-const hermesProvider = new OpenAIProvider();
-hermesProvider.id = "hermes";
+const hermesProvider = new HermesBridge();
 const hermesAgent = new Agent(hermesProvider, intelligence, memoryRetriever);
 async function applyAISettings() {
   const inference = await settings.apiConfiguration();
   aiProvider.configure(inference);
   contextBuilder.setTokenBudget(settings.publicSettings().contextTokenBudget);
   const endpoint = settings.hermesConfiguration().endpoint;
-  if (endpoint) hermesProvider.configure({ baseUrl: endpoint, model: inference.model });
+  const model = process.env.FORGE_HERMES_MODEL?.trim() || process.env.FORGE_OLLAMA_MODEL?.trim() || process.env.OPENAI_MODEL?.trim() || inference.model;
+  hermesProvider.configure({ endpoint, model });
 }
 async function resolveReasoningRuntime() {
   const publicSettings = settings.publicSettings();
