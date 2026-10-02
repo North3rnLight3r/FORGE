@@ -67,6 +67,13 @@ const fileRecord = async (kind, absolutePath, architectures) => {
     architectures
   };
 };
+const singleArtifactFor = async (extension) => {
+  const matches = (await fs.readdir(outputDirectory, { withFileTypes: true }))
+    .filter((entry) => entry.isFile() && entry.name.startsWith(`FORGE-${version}-`) && entry.name.endsWith(extension))
+    .map((entry) => path.join(outputDirectory, entry.name));
+  if (matches.length !== 1) throw new Error(`Expected exactly one ${extension} artifact, found ${matches.length}.`);
+  return matches[0];
+};
 
 await Promise.all([
   fs.rm(path.join(outputDirectory, 'builder-debug.yml'), { force: true }),
@@ -91,8 +98,8 @@ if (platform === 'win32') {
   artifacts.push(await fileRecord('nsis', installerPath, ['x64']));
   artifacts.push(await fileRecord('blockmap', `${installerPath}.blockmap`, ['x64']));
 } else if (platform === 'linux') {
-  artifacts.push(await fileRecord('appimage', path.join(outputDirectory, `FORGE-${version}-x64.AppImage`), ['x64']));
-  artifacts.push(await fileRecord('deb', path.join(outputDirectory, `FORGE-${version}-x64.deb`), ['x64']));
+  artifacts.push(await fileRecord('appimage', await singleArtifactFor('.AppImage'), ['x64']));
+  artifacts.push(await fileRecord('deb', await singleArtifactFor('.deb'), ['x64']));
 } else {
   for (const architecture of expectedArchitectures) {
     for (const extension of ['dmg', 'dmg.blockmap', 'zip', 'zip.blockmap']) {
