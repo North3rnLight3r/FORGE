@@ -56,12 +56,13 @@ function providerToolNames(tools: AgentToolDescriptor[]): Map<string, string> {
 }
 
 export class OpenAIProvider {
-  public id = 'openai';
+  public id: string;
   private apiKey: string | undefined;
   private baseUrl: string;
   private model: string;
 
-  constructor(opts?: { apiKey?: string; baseUrl?: string; model?: string }) {
+  constructor(opts?: { apiKey?: string; baseUrl?: string; model?: string; id?: string }) {
+    this.id = opts?.id ?? 'openai';
     this.apiKey = opts?.apiKey ?? process.env.OPENAI_API_KEY;
     this.baseUrl = this.normalizeBaseUrl(opts?.baseUrl ?? process.env.OPENAI_BASE_URL ?? DEFAULT_BASE_URL);
     this.model = this.normalizeModel(opts?.model ?? process.env.OPENAI_MODEL ?? DEFAULT_OPENAI_MODEL);

@@ -35,7 +35,7 @@ describe('Hermes runtime integration boundary', () => {
     expect(parseSkillMetadata('---\nname: test\ndescription: Tiny test.\n---\n# Ignored title\nlong body', '/tmp/test/SKILL.md', 'workspace')).toMatchObject({ name: 'test', description: 'Tiny test.' });
   });
   it.each([
-    ['linux', 'acp'],
+    ['linux', 'headless-http'],
     ['darwin', 'headless-http'],
     ['win32', 'headless-http']
   ] as const)('centralizes %s capability differences without changing workspace behavior', (platform, integrationMode) => {
@@ -47,5 +47,18 @@ describe('Hermes runtime integration boundary', () => {
     const status = { kind: 'hermes' as const, availability: 'degraded' as const, command: 'hermes', endpointReachable: false, skillRoots: [], message: 'offline' };
     expect(hermesIntegrationMode('win32', status)).toBe('unavailable');
     expect(resolveAgentRuntime('hermes', status, false).active).toBe('native');
+  });
+
+  it('activates the Ollama bridge when the OpenAI-compatible models endpoint is reachable without a Hermes CLI', async () => {
+    let requestedUrl = '';
+    const status = await new HermesRuntimeDetector().status({
+      command: 'missing-hermes-forge-test',
+      endpoint: 'http://127.0.0.1:11434/v1',
+      fetcher: async (url) => { requestedUrl = url.toString(); return new Response(JSON.stringify({ data: [{ id: 'llama3.2:3b' }] }), { status: 200 }); },
+      execute: async () => { throw new Error('not found'); }
+    });
+    expect(requestedUrl).toBe('http://127.0.0.1:11434/v1/models');
+    expect(status).toMatchObject({ availability: 'available', endpointReachable: true });
+    expect(resolveAgentRuntime('hermes', status).active).toBe('hermes');
   });
 });

@@ -8,20 +8,20 @@ FORGE remains authoritative for the active workspace, `.forge/metadata.sqlite`, 
 
 **IMPLEMENTED**
 
-- `@forge/agent-runtime` provides provider-neutral runtime profile types, cross-platform Hermes CLI detection, optional endpoint reachability checks, and native fallback selection.
-- Settings persist a requested runtime, optional Hermes command, and optional HTTPS-or-loopback endpoint without storing a credential in the workspace.
-- Typed IPC exposes runtime status and progressive skill metadata discovery.
+- `@forge/ai` exposes `HermesBridge`, a provider adapter that sends Hermes model requests to Ollama's OpenAI-compatible `/v1` API and normalizes structured tool calls back to FORGE semantic tool names.
+- `Agent` adds the shared FORGE intelligence layer to both native and Hermes messages. It carries the same evidence hierarchy, personality, task decomposition, verification behavior, and safety boundary to either model transport.
+- `@forge/agent-runtime` probes `GET <endpoint>/models`, activates the HTTP bridge when the endpoint is reachable, and retains native fallback when it is not. A Hermes CLI is optional for version and skill discovery.
+- The desktop runtime passes both profiles through the same context compiler, memory retriever, continuation loop, `ToolRouter`, execution policy, audit events, task checkpoints, and cancellation.
+- Settings accept `FORGE_AGENT_RUNTIME`, `FORGE_HERMES_ENDPOINT`, `FORGE_HERMES_MODEL`, and `FORGE_OLLAMA_MODEL` environment defaults without putting credentials in a workspace.
 - Skills are discovered from `.forge/skills`, repository `skills`, configured Hermes roots, and `/usr/share/forge/skills` only on Linux. FORGE indexes frontmatter metadata; it does not inject every skill body into every model turn.
 
-**PARTIALLY IMPLEMENTED**
+The bridge deliberately does not start Hermes-native filesystem or shell executors. Those would bypass FORGE's router, validation, execution-context injection, audit log, rollback, cancellation, and visible-browser boundary. Hermes supplies model behavior through Ollama; FORGE remains the only execution authority.
 
-Hermes v0.20.5 was observed exposing a headless ACP server (`hermes acp`) and MCP facilities. Its installed ACP implementation also exposes native filesystem and shell executors, which must not be enabled directly from FORGE because that would bypass FORGE’s router, validation, execution-context injection, audit log, rollback, cancellation, and visible-browser boundary. A detected CLI therefore reports availability and skill roots while FORGE continues to run the native agent path. This is intentional fallback behavior, not an assertion that Hermes is currently the authoritative executor.
+## Bridge contract
 
-## Next bridge contract
+The bridge accepts a bounded FORGE context packet and provider-visible semantic tool schemas, sends them to the selected Ollama model, and returns structured assistant text or one normalized tool call. The desktop continuation loop executes that call through `ToolRouter`, records the result, and sends bounded evidence back to the same provider. A missing model, crashed endpoint, malformed tool call, or incompatible response fails closed for that invocation and leaves Native FORGE available.
 
-The execution bridge must start Hermes ACP in a constrained toolset and expose FORGE's `ToolRouter` as the only tool surface (for example through a local FORGE-owned MCP server). It must accept a FORGE-supplied bounded context packet and return structured run events and semantic tool calls. The bridge must not receive durable-memory ownership, direct filesystem permissions, or raw credentials. FORGE maps valid tool requests directly through `ToolRouter`, attaches its `ToolExecutionContext`, surfaces events in Agent Actions, and returns bounded tool results to the same Hermes run.
-
-Required event mapping: planning, tool requested, tool started/completed/failed, step completed, task completed/cancelled, provider changed, and model changed. A missing, crashed, or incompatible bridge must keep `NativeForgeRuntime` active.
+Required event mapping remains owned by the desktop runtime: planning, tool requested, tool started/completed/failed, step completed, task completed/cancelled, provider changed, and model changed.
 
 ## Platform behavior
 

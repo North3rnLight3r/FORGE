@@ -9,6 +9,7 @@ const execFile = promisify(execFileCallback);
 export type AgentRuntimeKind = 'native' | 'hermes';
 export type SupportedPlatform = 'linux' | 'darwin' | 'win32' | 'other';
 export type HermesIntegrationMode = 'acp' | 'headless-http' | 'unavailable';
+export const DEFAULT_HERMES_ENDPOINT = 'http://127.0.0.1:11434/v1';
 
 export interface PlatformCapabilities {
   platform: SupportedPlatform;
@@ -28,7 +29,8 @@ export function normalizePlatform(value: string): SupportedPlatform { return ['l
 
 export function hermesIntegrationMode(platform: string, status: HermesRuntimeStatus | null): HermesIntegrationMode {
   if (status?.availability !== 'available') return 'unavailable';
-  return normalizePlatform(platform) === 'linux' ? 'acp' : status.endpointReachable ? 'headless-http' : 'unavailable';
+  if (status.endpointReachable === true) return 'headless-http';
+  return normalizePlatform(platform) === 'linux' ? 'acp' : 'unavailable';
 }
 
 export function platformCapabilities(input: { platform?: string; appDataPath: string; resourcePath: string; hermesStatus: HermesRuntimeStatus | null; embeddingProviderAvailable: boolean; embeddingModelAvailable: boolean; semanticIndexHealthy: boolean; workspaceDatabaseHealthy: boolean; toolRouterAvailable?: boolean }): PlatformCapabilities {
@@ -60,7 +62,7 @@ export class HermesRuntimeDetector {
     const environment = options.environment ?? process.env;
     const homeDirectory = options.homeDirectory ?? homedir();
     const configuredRoot = environment.HERMES_HOME?.trim();
-    const endpoint = normalizeEndpoint(options.endpoint);
+    const endpoint = normalizeEndpoint(options.endpoint ?? environment.FORGE_HERMES_ENDPOINT ?? (environment.FORGE_AGENT_RUNTIME === 'hermes' ? DEFAULT_HERMES_ENDPOINT : undefined));
     const execute = options.execute ?? ((file, args, executionOptions) => execFile(file, args, executionOptions));
     const fetcher = options.fetcher ?? fetch;
     let version: string | undefined;
@@ -76,7 +78,8 @@ export class HermesRuntimeDetector {
     let endpointReachable: boolean | null = null;
     if (endpoint) {
       try {
-        const response = await fetcher(endpoint, { method: 'HEAD', signal: AbortSignal.timeout(4_000) });
+        const modelsEndpoint = `${endpoint.replace(/\/$/, '')}/models`;
+        const response = await fetcher(modelsEndpoint, { method: 'GET', signal: AbortSignal.timeout(4_000) });
         endpointReachable = response.ok || response.status === 401 || response.status === 403;
       } catch { endpointReachable = false; }
     }
@@ -88,8 +91,8 @@ export class HermesRuntimeDetector {
       message: endpointReachable === false ? 'Hermes CLI is available, but the configured endpoint did not respond.' : 'Hermes CLI is available. FORGE retains workspace state and tool execution.'
     };
     if (endpointReachable) return {
-      kind: 'hermes', availability: 'degraded', command, endpoint, endpointReachable, skillRoots: discoveredRoots,
-      message: 'The configured Hermes endpoint responded, but the local Hermes CLI was not found. FORGE will keep using the native runtime until a supported headless bridge is configured.'
+      kind: 'hermes', availability: 'available', command, endpoint, endpointReachable, skillRoots: discoveredRoots,
+      message: 'The configured Hermes-compatible endpoint is reachable. FORGE will use the shared native ToolRouter through the Hermes bridge.'
     };
     return {
       kind: 'hermes', availability: 'unavailable', command, endpoint, endpointReachable, skillRoots: discoveredRoots,
@@ -100,7 +103,8 @@ export class HermesRuntimeDetector {
 
 /** Resolves the requested runtime without allowing an optional integration to become a single point of failure. */
 export function resolveAgentRuntime(requested: AgentRuntimeKind, status: HermesRuntimeStatus | null, bridgeAvailable = false): AgentRuntimeProfile {
-  const active: AgentRuntimeKind = requested === 'hermes' && status?.availability === 'available' && bridgeAvailable ? 'hermes' : 'native';
+  const endpointBridgeAvailable = status?.endpointReachable === true;
+  const active: AgentRuntimeKind = requested === 'hermes' && status?.availability === 'available' && (bridgeAvailable || endpointBridgeAvailable) ? 'hermes' : 'native';
   return { kind: active, requested, active, status };
 }
 

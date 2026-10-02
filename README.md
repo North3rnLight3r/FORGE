@@ -36,7 +36,7 @@ files + docs + Git + tasks + memory + observations
 
 Explicit tool results, current source, Git, and task/runtime evidence outrank historical memory. Semantic context and automatic indexing are enabled by default as discovery aids. A failed or unavailable embedding provider does not disable normal workspace intelligence or tool execution.
 
-Native FORGE is the active execution path. Hermes detection, endpoint checks, and skill metadata discovery are implemented, but Hermes remains a requested/fallback profile until a tested structured bridge routes every Hermes tool request through FORGE's ToolRouter.
+Native FORGE and Hermes are interchangeable execution profiles. Hermes uses `HermesBridge` over the configured OpenAI-compatible endpoint (Ollama by default on FORGE-OS), while the shared Agent loop, context packet, tool schemas, policy checks, ToolRouter, audit trail, and cancellation remain FORGE-owned.
 
 ## Install
 

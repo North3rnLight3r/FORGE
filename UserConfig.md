@@ -40,10 +40,12 @@ Use **Refresh provider models**, **Validate embedding model**, and **Rebuild sem
 
 ## Agent runtime
 
-- **Native FORGE runtime** is the default and current execution path.
-- **Hermes when its headless bridge is available** stores a requested profile, optional executable/command, and optional HTTPS-or-loopback endpoint.
+- **Native FORGE runtime** uses the configured OpenAI-compatible provider directly.
+- **Hermes runtime** uses `HermesBridge` over the configured endpoint. FORGE-OS supplies `http://127.0.0.1:11434/v1`, so Hermes can run through Ollama without a separate Hermes daemon or API key.
 
-Hermes availability alone does not activate it. FORGE requires a reachable, compatible structured bridge; otherwise Native FORGE remains active. Skill roots are discovered progressively from workspace/repository locations, configured Hermes roots, and the Linux system root where applicable. Skill bodies are not injected into every turn.
+Both profiles use the same intelligence layer, bounded workspace context, tool schemas, continuation loop, ToolRouter, policy, audit trail, and cancellation. Hermes activates when `GET <endpoint>/models` responds; if Ollama or the endpoint is unavailable, FORGE safely stays on the native profile. A Hermes CLI is optional and is used for version/skill discovery when installed. Skill roots are discovered progressively from workspace/repository locations, configured Hermes roots, and the Linux system root where applicable. Skill bodies are not injected into every turn.
+
+Environment defaults are `FORGE_AGENT_RUNTIME=hermes`, `FORGE_HERMES_ENDPOINT=http://127.0.0.1:11434/v1`, and `FORGE_OLLAMA_MODEL=llama3.2:3b` on FORGE-OS. Saved settings remain authoritative for the selected profile and provider values.
 
 `FORGE_AGENT_MAX_RUNTIME_MS` may bound a Native FORGE run between one minute and one hour; the default is 15 minutes. There is no small fixed tool-call or continuation-round limit. Repeated identical calls against an unchanged observed workspace revision are suppressed as lack of progress.
 

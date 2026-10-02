@@ -1,5 +1,6 @@
 import type { MemoryEntry, MemoryRetriever } from '@forge/memory';
 import type { ContextAssemblyResult } from './intelligence';
+import { intelligenceMessages } from './intelligence-layer';
 
 export interface AgentMessage { role: 'system' | 'user' | 'assistant'; content: string; }
 
@@ -65,7 +66,11 @@ export class Agent {
       ...boundedHistory,
       { role: 'user', content: question }
     ];
-    return { messages, memories, context };
+    return {
+      messages: intelligenceMessages(messages, { runtime: this.provider.id === 'hermes' ? 'hermes' : 'native' }),
+      memories,
+      context
+    };
   }
 
   async ask(question: string, history: readonly AgentMessage[] = []): Promise<string> {

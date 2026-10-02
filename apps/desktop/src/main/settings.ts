@@ -2,7 +2,7 @@ import { app, safeStorage } from 'electron';
 import { promises as fs } from 'node:fs';
 import { join } from 'node:path';
 import { normalizeUpdateChannel, type SettingsSaveRequest, type UserSettings } from '@forge/ipc';
-import { DEFAULT_OPENAI_MODEL } from '@forge/ai';
+import { DEFAULT_HERMES_ENDPOINT, DEFAULT_HERMES_MODEL, DEFAULT_OPENAI_MODEL } from '@forge/ai';
 import { DEFAULT_CONTEXT_TOKEN_BUDGET, DEFAULT_EMBEDDING_BASE_URL, DEFAULT_EMBEDDING_MODEL, type EmbeddingConfiguration } from '@forge/intelligence';
 
 interface StoredSettings {
@@ -45,6 +45,10 @@ export interface GitHubCredentials {
 
 const defaultBaseUrl = 'https://api.openai.com/v1';
 
+function environmentRuntime(): 'native' | 'hermes' { return process.env.FORGE_AGENT_RUNTIME === 'hermes' ? 'hermes' : 'native'; }
+function environmentHermesEndpoint(): string { return process.env.FORGE_HERMES_ENDPOINT?.trim() || (environmentRuntime() === 'hermes' ? DEFAULT_HERMES_ENDPOINT : ''); }
+function environmentModel(): string { return process.env.OPENAI_MODEL?.trim() || process.env.FORGE_HERMES_MODEL?.trim() || (environmentRuntime() === 'hermes' ? DEFAULT_HERMES_MODEL : DEFAULT_OPENAI_MODEL); }
+
 export class SettingsService {
   private data: StoredSettings = {};
   private settingsPath = '';
@@ -65,16 +69,16 @@ export class SettingsService {
   publicSettings(): UserSettings {
     return {
       apiBaseUrl: this.data.apiBaseUrl ?? process.env.OPENAI_BASE_URL ?? defaultBaseUrl,
-      apiModel: this.data.apiModel ?? process.env.OPENAI_MODEL ?? DEFAULT_OPENAI_MODEL,
+      apiModel: this.data.apiModel ?? environmentModel(),
       apiKeyConfigured: Boolean(this.data.apiKey || process.env.OPENAI_API_KEY),
       githubUsername: this.data.githubUsername ?? '',
       githubTokenConfigured: Boolean(this.data.githubToken),
       secureStorageAvailable: this.encryptionAvailable
       , webResearchEnabled: this.data.webResearchEnabled === true
       , updateChannel: normalizeUpdateChannel(this.data.updateChannel)
-      , agentRuntime: this.data.agentRuntime === 'hermes' ? 'hermes' : 'native'
-      , hermesCommand: this.data.hermesCommand ?? ''
-      , hermesEndpoint: this.data.hermesEndpoint ?? ''
+      , agentRuntime: this.data.agentRuntime ?? environmentRuntime()
+      , hermesCommand: this.data.hermesCommand ?? process.env.FORGE_HERMES_COMMAND ?? ''
+      , hermesEndpoint: this.data.hermesEndpoint ?? environmentHermesEndpoint()
       , embeddingEnabled: this.data.embeddingEnabled !== false
       , embeddingProvider: 'openai-compatible'
       , embeddingBaseUrl: this.data.embeddingBaseUrl ?? process.env.FORGE_EMBEDDING_BASE_URL ?? DEFAULT_EMBEDDING_BASE_URL
@@ -155,7 +159,7 @@ export class SettingsService {
     return {
       apiKey: overrides.apiKey?.trim() || (this.data.apiKey ? await this.decrypt(this.data.apiKey) : process.env.OPENAI_API_KEY),
       baseUrl: this.validateUrl(overrides.baseUrl || this.data.apiBaseUrl || process.env.OPENAI_BASE_URL || defaultBaseUrl),
-      model: overrides.model?.trim() || this.data.apiModel || process.env.OPENAI_MODEL || DEFAULT_OPENAI_MODEL
+      model: overrides.model?.trim() || this.data.apiModel || environmentModel()
     };
   }
 
@@ -192,7 +196,7 @@ export class SettingsService {
 
  webResearchEnabled(): boolean { return this.data.webResearchEnabled === true; }
   updateChannel(): 'stable' | 'beta' { return normalizeUpdateChannel(this.data.updateChannel); }
-  hermesConfiguration(): { command?: string; endpoint?: string } { return { command: this.data.hermesCommand, endpoint: this.data.hermesEndpoint }; }
+  hermesConfiguration(): { command?: string; endpoint?: string } { return { command: this.data.hermesCommand ?? process.env.FORGE_HERMES_COMMAND, endpoint: this.data.hermesEndpoint ?? environmentHermesEndpoint() }; }
 
   private validateUrl(value: string): string {
     const parsed = new URL(value.trim());

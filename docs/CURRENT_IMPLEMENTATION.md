@@ -18,8 +18,8 @@ This is a source-oriented inventory for the `2.5.0-beta` line, reconciled on 202
 - `@forge/intelligence` assembles provider-neutral, bounded, authority-ordered context.
 - Current source/Git/task/tool evidence outranks semantic and historical memory.
 - Semantic embeddings and event-driven indexing default on; a configured provider is required for vectors, and failure injects no semantic evidence while leaving ordinary tools operational.
-- Native FORGE runs the current agent loop. It is bounded by elapsed runtime and suppresses only redundant identical calls against unchanged observed workspace state.
-- `@forge/agent-runtime` detects Hermes and skills but keeps Native FORGE active without a compatible structured execution bridge.
+- Native FORGE and `HermesBridge` run the same agent loop. It is bounded by elapsed runtime and suppresses only redundant identical calls against unchanged observed workspace state.
+- `@forge/agent-runtime` probes the Ollama-compatible Hermes endpoint and falls back safely when it is unavailable; the optional Hermes CLI contributes version and skill discovery only.
 - The shared renderer uses a bounded Three.js aurora, bundled typography, animated glass surfaces, opt-out sounds, reduced-motion handling, and typed live context/memory/process telemetry without granting Node.js authority to the renderer.
 
 ## Tools

@@ -23,7 +23,7 @@ The published annotated `v2.5.0-beta` tag resolves to `430796e2b4de543f5e9c6b8a8
 | Terminal | Cross-platform PTY, filtered non-secret environment, resize/restart/cancel, Windows ConPTY support |
 | Browser/web | Sandboxed public HTTP(S) Browser, tabs/bookmarks/history, bounded page reads/finds, URL/DNS/redirect validation |
 | FORGE Live | Contained loopback static server, ports 5500–5599, in-memory reload client, Browser preview |
-| Runtime profiles | Native active; Hermes command/endpoint detection, reachability, skill metadata, and safe fallback |
+| Runtime profiles | Native and Hermes/Ollama profiles share the intelligence layer, context, ToolRouter, audit, and cancellation; endpoint reachability and safe fallback are verified |
 | Packaging | Linux AppImage/DEB, universal macOS DMG/ZIP, Windows x64 NSIS, runtime metadata, manifests, hashes, updater YAML, installed-runtime verifiers |
 | Living UI | Shared v2.5 identity, bounded Three.js aurora, glass surfaces, reduced-motion support, opt-out sounds, and real context/memory/process telemetry |
 
@@ -41,7 +41,7 @@ The published macOS package is not claimed as Developer ID notarized, and the Wi
 
 ## Known limitations
 
-1. Hermes cannot become the authoritative executor until a tested structured bridge exposes FORGE's ToolRouter as its only tool surface.
+1. Hermes model behavior is bridged through Ollama, while FORGE remains the authoritative executor and workspace owner. Future ACP/MCP integrations must preserve this boundary.
 2. Semantic discovery requires a separately available OpenAI-compatible embedding provider; the setting defaults on and reports degraded state when the provider is unavailable.
 3. Persistent tasks reconcile observed processes and artifacts but do not provide a general cross-restart supervisor for every external operation.
 4. Public packages lack established Apple notarization and Windows publisher signing.

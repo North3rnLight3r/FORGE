@@ -9,7 +9,7 @@ import { buildReleaseIdentity, formatAppBuildInfo, IPC_CHANNELS, type AppBuildIn
 import { WorkspaceService } from '@forge/workspace';
 import { GitHubService, GitService } from '@forge/git';
 import { StorageService } from '@forge/storage';
-import { OpenAIProvider, Agent } from '@forge/ai';
+import { Agent, HermesBridge, OpenAIProvider } from '@forge/ai';
 import { OpenAICompatibleEmbeddingClient, SemanticContextService, SemanticIndexer, WorkspaceContextEngine, WorkspaceIntelligenceService } from '@forge/intelligence';
 import { MemoryService, MemoryRetriever, MemoryIndexer } from '@forge/memory';
 import { UpdaterService } from './updater';
@@ -108,18 +108,21 @@ const memoryService = new MemoryService(storage as any);
 const memoryRetriever = new MemoryRetriever(memoryService as any);
 const memoryIndexer = new MemoryIndexer(memoryService as any, workspace as any);
 const agent = new Agent(aiProvider as any, intelligence as any, memoryRetriever as any);
-const hermesProvider = new OpenAIProvider();
-hermesProvider.id = 'hermes';
+const hermesProvider = new HermesBridge();
 const hermesAgent = new Agent(hermesProvider as any, intelligence as any, memoryRetriever as any);
 
 async function applyAISettings(): Promise<void> {
   const inference = await settings.apiConfiguration(); aiProvider.configure(inference);
   contextBuilder.setTokenBudget(settings.publicSettings().contextTokenBudget);
   const endpoint = settings.hermesConfiguration().endpoint;
-  if (endpoint) hermesProvider.configure({ baseUrl: endpoint, model: inference.model });
+  const model = process.env.FORGE_HERMES_MODEL?.trim()
+    || process.env.FORGE_OLLAMA_MODEL?.trim()
+    || process.env.OPENAI_MODEL?.trim()
+    || inference.model;
+  hermesProvider.configure({ endpoint, model });
 }
 
-async function resolveReasoningRuntime(): Promise<{ agent: Agent; provider: OpenAIProvider; kind: 'native' | 'hermes' }> {
+async function resolveReasoningRuntime(): Promise<{ agent: Agent; provider: OpenAIProvider | HermesBridge; kind: 'native' | 'hermes' }> {
   const publicSettings = settings.publicSettings();
   if (publicSettings.agentRuntime !== 'hermes' || !publicSettings.hermesEndpoint) return { agent, provider: aiProvider, kind: 'native' };
   const status = await new HermesRuntimeDetector().status(settings.hermesConfiguration());
