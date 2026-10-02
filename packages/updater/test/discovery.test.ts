@@ -14,7 +14,7 @@ const release = (version: string, options: { draft?: boolean; prerelease?: boole
     published_at: options.published === false ? null : publishedAt,
     assets: options.asset === false ? [] : [{
       name: assetName,
-      browser_download_url: options.assetUrl ?? `https://github.com/kaeganscott26/FORGE/releases/download/v${version}/${assetName}`
+      browser_download_url: options.assetUrl ?? `https://github.com/North3rnLight3r/FORGE/releases/download/v${version}/${assetName}`
     }]
   };
 };
@@ -23,7 +23,7 @@ const select = (current: string, channel: LogicalUpdateChannel, releases: GitHub
   releases,
   current,
   channel,
-  { owner: 'kaeganscott26', repo: 'FORGE' }
+  { owner: 'North3rnLight3r', repo: 'FORGE' }
 );
 
 describe('GitHub release discovery policy', () => {
@@ -47,7 +47,7 @@ describe('GitHub release discovery policy', () => {
     expect(select('1.1.0-beta.1', 'beta', [release('1.1.0-beta.2', { prerelease: false }), release('1.1.0', { prerelease: true })])).toBeNull();
     expect(select('1.1.0-beta.1', 'beta', [release('1.1.0-beta.2', { asset: false })])).toBeNull();
     expect(select('1.1.0-beta.1', 'beta', [release('1.1.0-beta.2', { assetUrl: 'https://example.com/beta-mac.yml' })])).toBeNull();
-    expect(select('1.1.0-beta.1', 'beta', [release('1.1.0-beta.2', { assetUrl: 'https://github.com/kaeganscott26/FORGE/releases/download/v1.1.0-beta.3/beta-mac.yml' })])).toBeNull();
+    expect(select('1.1.0-beta.1', 'beta', [release('1.1.0-beta.2', { assetUrl: 'https://github.com/North3rnLight3r/FORGE/releases/download/v1.1.0-beta.3/beta-mac.yml' })])).toBeNull();
   });
 
   it('selects the highest compatible release regardless of API ordering', () => {
@@ -57,9 +57,9 @@ describe('GitHub release discovery policy', () => {
   it('selects only updater metadata for the running desktop platform', () => {
     const windows = release('1.2.0-beta.1', { platform: 'win32' });
     const linux = release('1.2.0-beta.1', { platform: 'linux' });
-    expect(selectCompatibleRelease([windows], '1.1.0', 'beta', { owner: 'kaeganscott26', repo: 'FORGE' }, 'win32')?.metadataAssetUrl).toMatch(/beta\.yml$/);
-    expect(selectCompatibleRelease([linux], '1.1.0', 'beta', { owner: 'kaeganscott26', repo: 'FORGE' }, 'linux')?.metadataAssetUrl).toMatch(/beta-linux\.yml$/);
-    expect(selectCompatibleRelease([windows], '1.1.0', 'beta', { owner: 'kaeganscott26', repo: 'FORGE' }, 'darwin')).toBeNull();
+    expect(selectCompatibleRelease([windows], '1.1.0', 'beta', { owner: 'North3rnLight3r', repo: 'FORGE' }, 'win32')?.metadataAssetUrl).toMatch(/beta\.yml$/);
+    expect(selectCompatibleRelease([linux], '1.1.0', 'beta', { owner: 'North3rnLight3r', repo: 'FORGE' }, 'linux')?.metadataAssetUrl).toMatch(/beta-linux\.yml$/);
+    expect(selectCompatibleRelease([windows], '1.1.0', 'beta', { owner: 'North3rnLight3r', repo: 'FORGE' }, 'darwin')).toBeNull();
   });
 
   it('bounds and validates the GitHub API response before selection', async () => {
@@ -70,12 +70,12 @@ describe('GitHub release discovery policy', () => {
       headers: { get: (name) => name.toLowerCase() === 'content-type' ? 'application/json' : String(Buffer.byteLength(payload)) },
       arrayBuffer: async () => new TextEncoder().encode(payload).buffer
     }));
-    const discovery = new GitHubReleaseDiscovery({ owner: 'kaeganscott26', repo: 'FORGE', platform: 'darwin', fetch: request });
+    const discovery = new GitHubReleaseDiscovery({ owner: 'North3rnLight3r', repo: 'FORGE', platform: 'darwin', fetch: request });
     await expect(discovery.discover('1.1.0-alpha.3', 'beta')).resolves.toMatchObject({ version: '1.1.0-beta.1', feedChannel: 'beta' });
-    expect(request).toHaveBeenCalledWith('https://api.github.com/repos/kaeganscott26/FORGE/releases?per_page=50', expect.objectContaining({ signal: expect.any(AbortSignal) }));
+    expect(request).toHaveBeenCalledWith('https://api.github.com/repos/North3rnLight3r/FORGE/releases?per_page=50', expect.objectContaining({ signal: expect.any(AbortSignal) }));
     expect(request.mock.calls[0]?.[1].headers).not.toHaveProperty('Authorization');
 
-    const oversized = new GitHubReleaseDiscovery({ owner: 'kaeganscott26', repo: 'FORGE', maxResponseBytes: 10, fetch: request });
+    const oversized = new GitHubReleaseDiscovery({ owner: 'North3rnLight3r', repo: 'FORGE', maxResponseBytes: 10, fetch: request });
     await expect(oversized.discover('1.1.0-alpha.3', 'beta')).rejects.toThrow('size limit');
   });
 
@@ -83,7 +83,7 @@ describe('GitHub release discovery policy', () => {
     const request: ReleaseDiscoveryFetch = async (_url, init) => new Promise((_resolve, reject) => {
       init.signal.addEventListener('abort', () => reject(init.signal.reason), { once: true });
     });
-    const discovery = new GitHubReleaseDiscovery({ owner: 'kaeganscott26', repo: 'FORGE', timeoutMs: 5, fetch: request });
+    const discovery = new GitHubReleaseDiscovery({ owner: 'North3rnLight3r', repo: 'FORGE', timeoutMs: 5, fetch: request });
     await expect(discovery.discover('1.1.0-alpha.3', 'beta')).rejects.toThrow('timed out');
   });
 });

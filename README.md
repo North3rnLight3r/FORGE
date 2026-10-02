@@ -6,7 +6,7 @@ FORGE keeps project files, documentation, Git evidence, persistent tasks, conver
 
 Current release: `2.5.0-beta` · living intelligence UI · bounded semantic context · Hermes-ready runtime · Electron 43 · React 19 · TypeScript · Windows x64, universal macOS, and Linux x64 packages.
 
-The published [`v2.5.0-beta`](https://github.com/kaeganscott26/FORGE/releases/tag/v2.5.0-beta) artifacts were built from annotated tag commit `430796e`. The release adds the living intelligence visual system, complete artifact-packet telemetry, reliable activity indicators and sounds, and carries forward workspace/database recovery, bounded context, runtime parity, and workspace-open response recovery.
+The published [`v2.5.0-beta`](https://github.com/North3rnLight3r/FORGE/releases/tag/v2.5.0-beta) artifacts were built from annotated tag commit `430796e`. The release adds the living intelligence visual system, complete artifact-packet telemetry, reliable activity indicators and sounds, and carries forward workspace/database recovery, bounded context, runtime parity, and workspace-open response recovery.
 
 ## Why FORGE exists
 
@@ -40,7 +40,7 @@ Native FORGE is the active execution path. Hermes detection, endpoint checks, an
 
 ## Install
 
-Download the package for your platform from the [v2.5.0-beta release](https://github.com/kaeganscott26/FORGE/releases/tag/v2.5.0-beta):
+Download the package for your platform from the [v2.5.0-beta release](https://github.com/North3rnLight3r/FORGE/releases/tag/v2.5.0-beta):
 
 - macOS: `FORGE-2.5.0-beta-universal.dmg`
 - Windows x64: `FORGE-2.5.0-beta-x64.exe`

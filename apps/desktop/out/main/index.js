@@ -7220,8 +7220,8 @@ class GitHubReleaseDiscovery {
   }
 }
 const { autoUpdater } = electronUpdater;
-const releasesUrl = "https://github.com/kaeganscott26/FORGE/releases";
-const releaseDiscovery = new GitHubReleaseDiscovery({ owner: "kaeganscott26", repo: "FORGE", platform: process.platform === "win32" ? "win32" : process.platform === "linux" ? "linux" : "darwin" });
+const releasesUrl = "https://github.com/North3rnLight3r/FORGE/releases";
+const releaseDiscovery = new GitHubReleaseDiscovery({ owner: "North3rnLight3r", repo: "FORGE", platform: process.platform === "win32" ? "win32" : process.platform === "linux" ? "linux" : "darwin" });
 class UpdaterService {
   constructor(discovery = releaseDiscovery) {
     this.discovery = discovery;
@@ -11175,8 +11175,8 @@ function detachBrowserView() {
 function appBuildInfo() {
   return {
     ...buildReleaseIdentity(app.getVersion(), app.isPackaged),
-    commit: "403d6f3731854466a1be0b7fb49d37192063c383",
-    buildDate: "2026-09-28T13:59:33.843Z",
+    commit: "35c45bade229c715bc7c2589759c1c3e9fad8c1d",
+    buildDate: "2026-10-02T13:21:54.792Z",
     runtime: app.isPackaged ? "packaged" : "development",
     rendererSource,
     platform: process.platform,

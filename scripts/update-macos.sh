@@ -7,7 +7,7 @@ if [[ "$(uname -s)" != Darwin ]]; then
 fi
 
 repository_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-expected_origin='https://github.com/kaeganscott26/FORGE'
+expected_origin='https://github.com/North3rnLight3r/FORGE'
 cd "$repository_root"
 
 [[ "$(git branch --show-current)" == main ]] || { echo 'FORGE must be on main before updating.' >&2; exit 65; }

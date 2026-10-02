@@ -5,7 +5,7 @@ if ($env:OS -ne "Windows_NT") {
 }
 
 $RepositoryRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
-$ExpectedOrigin = "https://github.com/kaeganscott26/FORGE"
+$ExpectedOrigin = "https://github.com/North3rnLight3r/FORGE"
 Set-Location -LiteralPath $RepositoryRoot
 
 foreach ($RequiredFile in @("scripts\package-windows.ps1", "scripts\install-windows.ps1")) {

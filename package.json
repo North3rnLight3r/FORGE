@@ -8,10 +8,10 @@
     "name": "Kaegan Scott",
     "email": "kaeganscott26@gmail.com"
   },
-  "homepage": "https://github.com/kaeganscott26/FORGE",
+  "homepage": "https://github.com/North3rnLight3r/FORGE",
   "repository": {
     "type": "git",
-    "url": "https://github.com/kaeganscott26/FORGE.git"
+    "url": "https://github.com/North3rnLight3r/FORGE.git"
   },
   "type": "module",
   "main": "apps/desktop/out/main/index.js",
@@ -73,7 +73,7 @@
     "publish": [
       {
         "provider": "github",
-        "owner": "kaeganscott26",
+        "owner": "North3rnLight3r",
         "repo": "FORGE",
         "releaseType": "prerelease",
         "channel": "beta"

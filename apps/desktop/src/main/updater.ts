@@ -4,8 +4,8 @@ import { buildUpdatePolicy, isUpdateVersionEligible, type AppUpdateStatus } from
 import { GitHubReleaseDiscovery } from '@forge/updater';
 
 const { autoUpdater } = electronUpdater;
-const releasesUrl = 'https://github.com/kaeganscott26/FORGE/releases';
-const releaseDiscovery = new GitHubReleaseDiscovery({ owner: 'kaeganscott26', repo: 'FORGE', platform: process.platform === 'win32' ? 'win32' : process.platform === 'linux' ? 'linux' : 'darwin' });
+const releasesUrl = 'https://github.com/North3rnLight3r/FORGE/releases';
+const releaseDiscovery = new GitHubReleaseDiscovery({ owner: 'North3rnLight3r', repo: 'FORGE', platform: process.platform === 'win32' ? 'win32' : process.platform === 'linux' ? 'linux' : 'darwin' });
 type ReleaseDiscovery = Pick<GitHubReleaseDiscovery, 'discover'>;
 
 export class UpdaterService {

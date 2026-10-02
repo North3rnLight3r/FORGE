@@ -35,7 +35,7 @@ Enforced boundaries remain: semantic schema validation, configured filesystem/ne
 
 ## Published release
 
-[`v2.5.0-beta`](https://github.com/kaeganscott26/FORGE/releases/tag/v2.5.0-beta) was published on 2026-08-31 with Linux x64, universal macOS, and Windows x64 packages plus updater metadata, blockmaps, `SHA256SUMS`, and a build manifest. GitHub reports it as a non-draft prerelease.
+[`v2.5.0-beta`](https://github.com/North3rnLight3r/FORGE/releases/tag/v2.5.0-beta) was published on 2026-08-31 with Linux x64, universal macOS, and Windows x64 packages plus updater metadata, blockmaps, `SHA256SUMS`, and a build manifest. GitHub reports it as a non-draft prerelease.
 
 The published macOS package is not claimed as Developer ID notarized, and the Windows package is not claimed as publisher signed. Integrity/provenance and platform signing are separate assertions.
 
