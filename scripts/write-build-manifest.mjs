@@ -35,7 +35,9 @@ const [{ stdout: currentCommit }, { stdout: workingTree }] = await Promise.all([
   // source change must still make a release manifest ineligible for upload.
   execute('git', ['status', '--porcelain', '--', '.', ':(exclude)apps/desktop/out/main/index.js'], { cwd: repositoryRoot })
 ]);
-if (commit !== currentCommit.trim()) throw new Error('Compiled build commit does not match the current Git HEAD.');
+const expectedCommit = process.env.FORGE_BUILD_COMMIT?.trim() || currentCommit.trim();
+if (!/^[0-9a-f]{40}$/.test(expectedCommit)) throw new Error('The build commit provenance is unavailable or malformed.');
+if (commit !== expectedCommit) throw new Error(`Compiled build commit does not match the expected source commit: ${expectedCommit}.`);
 
 const sha256 = async (filePath) => createHash('sha256').update(await fs.readFile(filePath)).digest('hex');
 const windowsExecutableArchitecture = async (filePath) => {
