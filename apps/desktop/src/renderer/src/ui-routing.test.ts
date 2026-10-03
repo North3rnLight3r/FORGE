@@ -42,6 +42,8 @@ describe('renderer control routing', () => {
     expect(app).toContain("forgeInvoke('meta.goal.create'");
     expect(app).toContain("forgeInvoke('meta.task.create'");
     expect(app).toContain("openWorkspaceFrom('workspace.open.home'");
+    expect(app).toContain('className="workspace-actions"');
+    expect(app).toContain('title="Open workspace (⌘/Ctrl+O)"');
     expect(workspaceOpening).toContain("'workspace.info'");
     expect(Object.values(IPC_CHANNELS)).toEqual(expect.arrayContaining(['file.create', 'meta.goal.create', 'meta.task.create', 'workspace.open.home']));
   });

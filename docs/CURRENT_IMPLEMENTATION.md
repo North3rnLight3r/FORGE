@@ -1,10 +1,10 @@
 # Current FORGE Implementation
 
-This is a source-oriented inventory for the `2.5.0-beta` line, reconciled on 2026-09-28 against the current working tree.
+This is a source-oriented inventory for the `2.5.0-beta` line, reconciled on 2026-10-03 against the current working tree.
 
 ## Desktop boundary
 
-- `apps/desktop/src/main/index.ts` composes workspace, Git, storage, intelligence, semantic indexing, tasks, tools, shell/terminal, Browser, FORGE Live, settings, runtime profiles, updater, and typed IPC.
+- `apps/desktop/src/main/index.ts` composes workspace, Git, storage, intelligence, semantic indexing, tasks, tools, shell/terminal, Browser, FORGE Live, settings, runtime profiles, local update lifecycle, and typed IPC.
 - `apps/desktop/src/preload/index.ts` exposes only allowlisted typed IPC and event subscriptions.
 - `apps/desktop/src/renderer` owns the React/Monaco interface and has no direct Node.js access.
 - Folder selection returns canonical `WorkspaceInfo`; the renderer re-reads `workspace.info` if a successful open loses its payload.
@@ -33,10 +33,10 @@ The retired per-call approval queue/session-grant layer remains absent; persiste
 - Terminal chooses native shell arguments per platform and carries a small non-secret environment.
 - FORGE Live serves contained workspace files only on loopback and reuses Browser navigation policy.
 - FORGE-OS integration is gated to Linux/FORGE-OS runtime conditions; Windows and macOS do not inherit Linux service behavior.
-- Update discovery applies Stable/Beta semantic policy before configuring Electron Updater.
+- The update service launches the current local platform checkout; no release-feed discovery or Electron Updater is configured. Each platform has one package, install, update, and uninstall entry point, and update always runs package then install from the exact checkout present at invocation.
 
 ## Packaging
 
-Every native package stages `build/forge-runtime.json`, embeds source commit/build date/version, writes `dist_electron/build-manifest.json`, and verifies artifact topology, hashes, architecture, updater metadata, executable, and `app.asar`. Windows and macOS install scripts select the manifest artifact and verify the installed runtime; Linux packaging verifies AppImage/DEB output for its native runner.
+Every native package stages `build/forge-runtime.json`, embeds source commit/build date/version, writes `dist_electron/build-manifest.json`, and verifies artifact topology, hashes, architecture, executable, and `app.asar`. Windows and macOS install scripts select the manifest artifact and verify the installed runtime; Linux packaging verifies AppImage/DEB output for its native runner.
 
 Generated `apps/desktop/out` and `dist_electron` files are evidence only, never source authority.

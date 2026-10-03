@@ -37,7 +37,6 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v5
         with: { node-version: '22', cache: npm }
-      - run: npm ci
       - run: bash scripts/package-linux.sh
       - uses: actions/upload-artifact@v7
         with:
@@ -52,9 +51,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v5
         with: { node-version: '22', cache: npm }
-      - run: npm ci
-      - run: npm run package:mac:universal
-      - run: node scripts/verify-build-manifest.mjs
+      - run: npm run package:macos
       - run: shasum -a 256 dist_electron/FORGE-* > dist_electron/SHA256SUMS
       - uses: actions/upload-artifact@v7
         with:
@@ -69,9 +66,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v5
         with: { node-version: '22', cache: npm }
-      - run: npm ci
-      - run: npm run package:win
-      - run: node scripts/verify-build-manifest.mjs
+      - run: npm run package:windows
       - shell: pwsh
         run: Get-ChildItem dist_electron -File | Get-FileHash -Algorithm SHA256 | ForEach-Object { "$($_.Hash.ToLower())  $($_.Path)" } | Set-Content dist_electron/SHA256SUMS
       - uses: actions/upload-artifact@v7
@@ -105,7 +100,7 @@ jobs:
             cp "$asset" "$upload_directory/$name"
           done < <(find release-assets -mindepth 2 -maxdepth 2 -type f ! -name build-manifest.json ! -name SHA256SUMS ! -name builder-debug.yml ! -name builder-effective-config.yaml -print | sort)
           mapfile -t assets < <(find "$upload_directory" -maxdepth 1 -type f -print | sort)
-          test "${#assets[@]}" -eq 11
+          test "${#assets[@]}" -eq 8
           (cd "$upload_directory" && sha256sum * > SHA256SUMS.all)
           assets+=("$upload_directory/SHA256SUMS.all")
           gh release create "$release_tag" "${assets[@]}" --repo "$GITHUB_REPOSITORY" --verify-tag --title "FORGE 2.5.0-beta" --notes-file RELEASE_NOTES.md --prerelease

@@ -1,7 +1,7 @@
 import { app, safeStorage } from 'electron';
 import { promises as fs } from 'node:fs';
 import { join } from 'node:path';
-import { normalizeUpdateChannel, type SettingsSaveRequest, type UserSettings } from '@forge/ipc';
+import { type SettingsSaveRequest, type UserSettings } from '@forge/ipc';
 import { DEFAULT_HERMES_ENDPOINT, DEFAULT_HERMES_MODEL, DEFAULT_OPENAI_MODEL } from '@forge/ai';
 import { DEFAULT_CONTEXT_TOKEN_BUDGET, DEFAULT_EMBEDDING_BASE_URL, DEFAULT_EMBEDDING_MODEL, type EmbeddingConfiguration } from '@forge/intelligence';
 
@@ -13,7 +13,6 @@ interface StoredSettings {
   githubUsername?: string;
   githubToken?: string;
   webResearchEnabled?: boolean;
-  updateChannel?: 'stable' | 'beta' | 'preview';
   agentRuntime?: 'native' | 'hermes';
   hermesCommand?: string;
   hermesEndpoint?: string;
@@ -75,7 +74,6 @@ export class SettingsService {
       githubTokenConfigured: Boolean(this.data.githubToken),
       secureStorageAvailable: this.encryptionAvailable
       , webResearchEnabled: this.data.webResearchEnabled === true
-      , updateChannel: normalizeUpdateChannel(this.data.updateChannel)
       , agentRuntime: this.data.agentRuntime ?? environmentRuntime()
       , hermesCommand: this.data.hermesCommand ?? process.env.FORGE_HERMES_COMMAND ?? ''
       , hermesEndpoint: this.data.hermesEndpoint ?? environmentHermesEndpoint()
@@ -105,7 +103,6 @@ export class SettingsService {
     this.data.apiModel = request.apiModel.trim() || DEFAULT_OPENAI_MODEL;
     this.data.githubUsername = request.githubUsername.trim();
     this.data.webResearchEnabled = request.webResearchEnabled === true;
-    this.data.updateChannel = normalizeUpdateChannel(request.updateChannel);
     this.data.agentRuntime = request.agentRuntime === 'hermes' ? 'hermes' : 'native';
     const hermesCommand = request.hermesCommand?.trim();
     if (hermesCommand) this.data.hermesCommand = this.validateCommand(hermesCommand); else delete this.data.hermesCommand;
@@ -195,7 +192,6 @@ export class SettingsService {
   }
 
  webResearchEnabled(): boolean { return this.data.webResearchEnabled === true; }
-  updateChannel(): 'stable' | 'beta' { return normalizeUpdateChannel(this.data.updateChannel); }
   hermesConfiguration(): { command?: string; endpoint?: string } { return { command: this.data.hermesCommand ?? process.env.FORGE_HERMES_COMMAND, endpoint: this.data.hermesEndpoint ?? environmentHermesEndpoint() }; }
 
   private validateUrl(value: string): string {

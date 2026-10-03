@@ -21,12 +21,12 @@ if (!/^[0-9a-f]{40}$/.test(manifest.gitCommit) || Number.isNaN(Date.parse(manife
 const expectedChannel = packageManifest.version.includes('-') ? 'beta' : 'stable';
 if (manifest.channel !== expectedChannel) throw new Error('Build manifest channel does not match package.json.');
 const expectedArtifactKinds = manifest.platform === 'win32'
-  ? ['blockmap', 'nsis', 'updater-metadata']
+  ? ['blockmap', 'nsis']
   : manifest.platform === 'linux'
-    ? ['appimage', 'deb', 'updater-metadata']
-  : manifest.artifacts.length === 5
-    ? ['blockmap', 'blockmap', 'dmg', 'updater-metadata', 'zip']
-    : ['blockmap', 'blockmap', 'blockmap', 'blockmap', 'dmg', 'dmg', 'updater-metadata', 'zip', 'zip'];
+    ? ['appimage', 'deb']
+  : manifest.artifacts.length === 4
+    ? ['blockmap', 'blockmap', 'dmg', 'zip']
+    : ['blockmap', 'blockmap', 'blockmap', 'blockmap', 'dmg', 'dmg', 'zip', 'zip'];
 if (JSON.stringify(manifest.artifacts.map((entry) => entry.kind).sort()) !== JSON.stringify(expectedArtifactKinds.sort())) {
   throw new Error('Build manifest artifact topology is incomplete or unexpected.');
 }

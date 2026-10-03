@@ -78,15 +78,15 @@ const singleArtifactFor = async (extension) => {
 await Promise.all([
   fs.rm(path.join(outputDirectory, 'builder-debug.yml'), { force: true }),
   fs.rm(path.join(outputDirectory, 'builder-effective-config.yaml'), { force: true }),
-  fs.rm(path.join(outputDirectory, platform === 'win32' ? '.icon-ico' : platform === 'darwin' ? '.icon-icns' : '.icon-set'), { recursive: true, force: true })
+  fs.rm(path.join(outputDirectory, platform === 'win32' ? '.icon-ico' : platform === 'darwin' ? '.icon-icns' : '.icon-set'), { recursive: true, force: true }),
+  ...['latest.yml', 'beta.yml', 'latest-linux.yml', 'beta-linux.yml', 'latest-mac.yml', 'beta-mac.yml'].map((name) => fs.rm(path.join(outputDirectory, name), { force: true }))
 ]);
 
 const outputEntries = await fs.readdir(outputDirectory, { withFileTypes: true });
-const metadataName = platform === 'win32' ? `${channel}.yml` : `${channel}-${platform === 'linux' ? 'linux' : 'mac'}.yml`;
 const staleFiles = outputEntries
   .filter((entry) => entry.isFile())
   .map((entry) => entry.name)
-  .filter((name) => name !== metadataName && !name.startsWith(`FORGE-${version}-`));
+  .filter((name) => !name.startsWith(`FORGE-${version}-`));
 if (staleFiles.length > 0) throw new Error(`Packaging output contains stale or unexpected files: ${staleFiles.join(', ')}`);
 const expectedAppDirectories = new Set([...expectedArchitectures].map(appDirectoryFor));
 const staleDirectories = outputEntries.filter((entry) => entry.isDirectory() && !expectedAppDirectories.has(entry.name)).map((entry) => entry.name);
@@ -108,9 +108,6 @@ if (platform === 'win32') {
     }
   }
 }
-const metadataPath = path.join(outputDirectory, metadataName);
-artifacts.push(await fileRecord('updater-metadata', metadataPath, expectedArchitectures.has('universal') ? ['x86_64', 'arm64'] : [...expectedArchitectures]));
-
 const packagedApplications = [];
 for (const architecture of expectedArchitectures) {
   const appPath = path.join(outputDirectory, appDirectoryFor(architecture), 'FORGE.app');

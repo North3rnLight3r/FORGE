@@ -434,7 +434,7 @@ function registerHandlers(): void {
   register(IPC_CHANNELS.appBuildInfo, async () => appBuildInfo());
   register(IPC_CHANNELS.appBuildInfoCopy, async () => { const info = appBuildInfo(); clipboard.writeText(formatAppBuildInfo(info)); return info; });
   register(IPC_CHANNELS.settingsGet, async () => settings.publicSettings());
-  register(IPC_CHANNELS.settingsSave, async (request) => { const result = await settings.save(request); await applyAISettings(); updater.setChannel(result.updateChannel); if (result.embeddingEnabled && result.autoIndex) void runSemanticRefresh(() => semanticIndexer.incremental(), 'settings-save'); return result; });
+  register(IPC_CHANNELS.settingsSave, async (request) => { const result = await settings.save(request); await applyAISettings(); if (result.embeddingEnabled && result.autoIndex) void runSemanticRefresh(() => semanticIndexer.incremental(), 'settings-save'); return result; });
   register(IPC_CHANNELS.settingsTestApi, async () => aiProvider.testConnection());
   register(IPC_CHANNELS.settingsModelsList, async (request) => new OpenAIProvider(await settings.apiConfiguration({ apiKey: request.apiKey, baseUrl: request.apiBaseUrl })).listModels());
   register(IPC_CHANNELS.settingsModelValidate, async (request) => new OpenAIProvider(await settings.apiConfiguration({ apiKey: request.apiKey, baseUrl: request.apiBaseUrl, model: request.apiModel })).validateModel(request.apiModel));
@@ -598,7 +598,7 @@ app.on('second-instance', (_event, commandLine) => {
 app.whenReady().then(async () => {
   const developmentIcon = join(process.cwd(), 'apps/desktop/resources/ForgeIcon-v2.5-1024.png');
   if (process.platform === 'darwin' && is.dev && app.dock && existsSync(developmentIcon)) app.dock.setIcon(developmentIcon);
-  try { await settings.init(); await applyAISettings(); updater.setChannel(settings.updateChannel()); registerHandlers(); const startupWorkspace = process.argv.find((argument) => argument.startsWith('--workspace='))?.slice('--workspace='.length) ?? settings.lastWorkspacePath(); if (startupWorkspace) await openWorkspaceAt(startupWorkspace).catch(() => undefined); createWindow(); app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); }); }
+  try { await settings.init(); await applyAISettings(); registerHandlers(); const startupWorkspace = process.argv.find((argument) => argument.startsWith('--workspace='))?.slice('--workspace='.length) ?? settings.lastWorkspacePath(); if (startupWorkspace) await openWorkspaceAt(startupWorkspace).catch(() => undefined); createWindow(); app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); }); }
   catch (error) { dialog.showErrorBox('FORGE could not start', error instanceof Error ? error.message : String(error)); app.quit(); }
 });
 app.on('window-all-closed', async () => { terminalService.dispose(); await forgeLive?.stop().catch(() => undefined); forgeLive = null; await semanticIndexer.stop(); await storage.close(); if (process.platform !== 'darwin') app.quit(); });

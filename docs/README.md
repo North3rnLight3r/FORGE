@@ -6,7 +6,7 @@ These documents describe current `2.5.0-beta` source behavior unless explicitly 
 
 - [Project README](../README.md) — product overview, installation, development, and documentation map.
 - [User Manual](../UserManual.md) — daily desktop use, plain-language agent workflows, policy settings, and troubleshooting.
-- [User Configuration](../UserConfig.md) — providers, credentials, execution/scope policy, semantic context, runtimes, and update channels.
+- [User Configuration](../UserConfig.md) — providers, credentials, execution/scope policy, semantic context, runtimes, and local updates.
 - [Project Status](PROJECT_STATUS.md) — current implementation, published-release boundary, and known limitations.
 - [Architecture](ARCHITECTURE.md) — ownership, data flow, packages, and runtime boundaries.
 

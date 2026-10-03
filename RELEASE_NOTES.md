@@ -18,7 +18,7 @@ The release also carries forward the post-2.4 recovery and parity work:
 - shared runtime and packaging parity across Linux, macOS, and Windows, including embedded commit metadata, manifests, native architecture checks, and installed-runtime verification;
 - branch/runtime audit and documentation consolidation.
 
-Linux, macOS, and Windows packages are built from the same annotated source tag; platform-native package hashes remain distinct.
+Linux, macOS, and Windows packages are built from the same annotated source tag; platform-native package hashes remain distinct. The desktop update action is local-source-only: it rebuilds the checkout on the machine and does not consume release feeds.
 
 ## Published `v2.4.0-beta`
 
@@ -28,7 +28,7 @@ The published release added the native semantic-context foundation and coordinat
 - lazy semantic routing with bounded results, deduplication, source freshness checks, Float32 storage, and batched persistence;
 - provider-neutral FORGE Intelligence and Native FORGE execution using the shared ToolRouter;
 - Hermes CLI/endpoint discovery, skill metadata discovery, and safe Native FORGE fallback;
-- Linux AppImage/DEB, universal macOS DMG/ZIP, Windows NSIS, updater metadata, SHA-256 sums, and build manifests.
+- Linux AppImage/DEB, universal macOS DMG/ZIP, Windows NSIS, blockmaps, SHA-256 sums, and build manifests.
 
 ## Execution model
 
@@ -39,7 +39,7 @@ The current runtime does not contain the retired FORGE approval queue, approval 
 - Tag: `v2.4.0-beta`
 - Tagged commit: `ff798b91a1a027a4891214c4da6549fc3336d210`
 - Published: 2026-08-26
-- Assets: Linux x64 AppImage/DEB, universal macOS DMG/ZIP, Windows x64 NSIS, updater YAML, blockmaps, `SHA256SUMS`, and build manifest
+- Assets: Linux x64 AppImage/DEB, universal macOS DMG/ZIP, Windows x64 NSIS, blockmaps, `SHA256SUMS`, and build manifest
 - GitHub currently reports the release as a normal release rather than a prerelease, despite the beta version and workflow intent
 - Apple notarization and Windows publisher signing are not claimed
 

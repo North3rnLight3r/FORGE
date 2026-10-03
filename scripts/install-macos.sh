@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+[[ "$(uname -s)" == Darwin ]] || { echo 'This installation procedure must run on macOS.' >&2; exit 1; }
+
 project_root="$(cd "$(dirname "$0")/.." && pwd)"
 manifest="$project_root/dist_electron/build-manifest.json"
 session_launcher="$project_root/scripts/forge-session-macos.sh"

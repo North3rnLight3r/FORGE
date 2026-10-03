@@ -17,7 +17,7 @@ metadata_value() {
 }
 
 [[ "$(/usr/bin/uname -s)" == "Darwin" ]] || fail 'This launcher is for macOS.'
-[[ -x "$executable" ]] || fail "FORGE is not installed at $app_path. Run npm run install:mac from a packaged FORGE checkout."
+[[ -x "$executable" ]] || fail "FORGE is not installed at $app_path. Run npm run install:macos from a packaged FORGE checkout."
 [[ -r "$info_plist" && -r "$runtime_metadata" ]] || fail "FORGE at $app_path is incomplete. Reinstall the current packaged runtime."
 
 bundle_version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$info_plist" 2>/dev/null || true)"

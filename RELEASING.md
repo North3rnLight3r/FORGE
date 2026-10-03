@@ -10,7 +10,7 @@ This guide describes the current cross-platform `2.5.0-beta` release system. The
 - Use an annotated `v<version>` tag whose peeled commit is the reviewed release commit.
 - Build each native platform on its matching runner.
 - Treat the build manifest, runtime metadata, asset hashes, tag provenance, public release, and installed runtime as separate evidence.
-- Publish updater metadata only after its referenced payloads exist and have been verified.
+- Publish only the verified native package and blockmap assets; the desktop does not consume a release updater feed.
 - Never bypass forward-only update policy with a duplicate tag, moved tag, asset replacement, or compatibility release.
 
 ## Version and source gate
@@ -47,11 +47,11 @@ git push origin v<version>
 
 `.github/workflows/release.yml` runs the source gate on Ubuntu, macOS, and Windows, then builds:
 
-- Linux x64 AppImage, DEB, blockmaps/updater metadata, runtime metadata, and manifest;
-- universal macOS DMG and ZIP with blockmaps/updater metadata, runtime metadata, and manifest;
-- Windows x64 NSIS with blockmap/updater metadata, runtime metadata, native `node-pty` resources, and manifest.
+- Linux x64 AppImage and DEB, runtime metadata, and manifest;
+- universal macOS DMG and ZIP with blockmaps, runtime metadata, and manifest;
+- Windows x64 NSIS with blockmap, runtime metadata, native `node-pty` resources, and manifest.
 
-Each package job verifies its native manifest before upload. The publish job downloads the three platform outputs, rejects duplicate basenames, excludes internal per-platform manifests/checksum files, requires exactly 11 public runtime/updater assets, creates `SHA256SUMS.all`, verifies the annotated tag through GitHub CLI, and publishes the 12-file set as a prerelease.
+Each package job verifies its native manifest before upload. The publish job downloads the three platform outputs, rejects duplicate basenames, excludes internal per-platform manifests/checksum files, requires exactly 8 public package/blockmap assets, creates `SHA256SUMS.all`, verifies the annotated tag through GitHub CLI, and publishes the 9-file set as a prerelease.
 
 ## Local packaging and installed-runtime checks
 
@@ -59,12 +59,14 @@ Run native commands only on their target OS:
 
 ```sh
 # macOS
-npm run update:mac
+npm run package:macos
+npm run install:macos
 ```
 
 ```powershell
 # Windows
-npm run update:win
+npm run package:windows
+npm run install:windows
 ```
 
 ```sh
@@ -72,7 +74,7 @@ npm run update:win
 ./scripts/package-linux.sh
 ```
 
-macOS and Windows update scripts require trusted origin/main and refuse dirty source outside `.obsidian`. They stage embedded `forge-runtime.json`, generate and verify `dist_electron/build-manifest.json`, install the manifest-selected artifact, and verify installed version, commit, build date, executable, and `app.asar` provenance. Windows installation also verifies required `node-pty`/ConPTY resources and requires FORGE to be closed.
+Each platform package command stages `forge-runtime.json`, generates and verifies `dist_electron/build-manifest.json`, and leaves exactly one current platform artifact set. Install commands consume only that manifest and verify installed version, commit, build date, executable, and `app.asar` provenance. Update commands are only package followed by install from the current checkout; they do not fetch or merge Git refs. Windows installation also verifies required `node-pty`/ConPTY resources and requires FORGE to be closed. Uninstall commands remove only the installed application and launcher, never the source checkout or build record.
 
 Do not substitute a manually selected wildcard installer for the manifest-selected artifact. A responsive process alone does not prove provenance; a hash match alone does not prove startup.
 
@@ -85,21 +87,20 @@ After the workflow completes, verify:
 3. the GitHub release is not a draft and its prerelease flag matches the semantic channel;
 4. every expected platform asset exists exactly once;
 5. GitHub-reported digests and downloaded hashes match `SHA256SUMS.all` and the platform manifests retained in CI evidence;
-6. updater YAML names, sizes, and hashes match their payloads;
-7. installed runtime metadata and `app.asar` embed the release commit;
-8. the installed app opens, loads the packaged renderer, opens a workspace, and remains responsive;
-9. signing/notarization status is reported independently from integrity.
+6. installed runtime metadata and `app.asar` embed the release commit;
+7. the installed app opens, loads the packaged renderer, opens a workspace, and remains responsive;
+8. signing/notarization status is reported independently from integrity.
 
 The GitHub `v2.5.0-beta` release is public, non-draft, and reported as a prerelease. Its annotated tag and remote asset digests remain part of the provenance chain; signing/notarization status remains a separate assertion.
 
 ## Update-policy validation
 
-Test Stable and Beta separately:
+Validate each native update command from a deliberately selected local checkout:
 
-- Stable accepts only a strictly newer stable version.
-- Beta accepts only a strictly newer beta, rc, or stable version.
-- Alpha, equal, older, malformed, draft, unsafe, or incomplete releases are rejected.
-- The downloader result is revalidated before installation and downgrade permission remains disabled.
+- the command packages the current source tree and installs its exact manifest-selected artifact;
+- detached, dirty, and divergent source trees remain unchanged;
+- no command fetches, merges, resets, downloads a release, or selects a stale artifact;
+- uninstall removes only the canonical installed runtime and launcher.
 
 ## Publication checklist
 

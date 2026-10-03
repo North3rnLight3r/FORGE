@@ -32,7 +32,7 @@ button:disabled { opacity: .42; cursor: default; }
 .forge-os-applications { left: max(12px, calc(50% - 360px)); width: 330px; }.forge-os-applications > button { display: grid; width: 100%; gap: 3px; padding: 9px 12px; border-radius: 0; background: transparent; text-align: left; }.forge-os-applications > button:hover { background: #213027; }.forge-os-applications small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .forge-os-system { right: max(12px, calc(50% - 360px)); width: min(440px, calc(100vw - 24px)); }.forge-os-system dl { display: grid; grid-template-columns: 110px 1fr; gap: 7px 12px; padding: 12px; margin: 0; font-size: 11px; }.forge-os-system dt { color: #7f9188; }.forge-os-system dd { margin: 0; overflow-wrap: anywhere; }.forge-os-system footer { padding: 10px 12px; border-top: 1px solid #293831; color: #71847a; font-size: 9px; line-height: 1.6; }
 .forge-os-session { right: max(12px, calc(50% - 360px)); width: 210px; padding: 6px; }.forge-os-session button { display: block; width: 100%; background: transparent; text-align: left; }.forge-os-session button:hover { background: #27362d; }.forge-os-session p { margin: 7px; color: #819087; font-size: 9px; }.forge-os-error { position: fixed; z-index: 110; top: 55px; left: 50%; transform: translateX(-50%); padding: 8px 10px; background: #4b2028; border-radius: 6px; font-size: 10px; }.forge-os-error button { padding: 0 4px; margin-left: 8px; background: transparent; }
-.app-header { position: relative; z-index: 10; height: 58px; min-width: 0; display: flex; align-items: center; gap: 14px; justify-content: space-between; padding: 0 18px; border-bottom: 1px solid rgba(77,211,255,.18); background: linear-gradient(180deg, rgba(10,20,29,.94), rgba(7,13,20,.86)); box-shadow: 0 10px 34px rgba(0,0,0,.3); backdrop-filter: blur(24px) saturate(1.25); }
+.app-header { position: relative; z-index: 10; height: 58px; min-width: 0; display: flex; align-items: center; gap: 10px; justify-content: space-between; padding: 0 18px; border-bottom: 1px solid rgba(77,211,255,.18); background: linear-gradient(180deg, rgba(10,20,29,.94), rgba(7,13,20,.86)); box-shadow: 0 10px 34px rgba(0,0,0,.3); backdrop-filter: blur(24px) saturate(1.25); }
 .brand { min-width: 0; display: flex; gap: 9px; align-items: center; font-weight: 800; letter-spacing: .15em; white-space: nowrap; }
 .brand small { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .forge-brand { display: inline-flex; align-items: center; gap: 8px; width: auto !important; height: auto !important; color: inherit !important; background: none !important; border-radius: 0 !important; letter-spacing: 0 !important; }
@@ -41,7 +41,9 @@ button:disabled { opacity: .42; cursor: default; }
 .forge-version-mark { width: auto !important; height: auto !important; display: inline !important; padding: 2px 5px; border: 1px solid rgba(166,103,255,.35); border-radius: 6px !important; color: #caadff !important; background: rgba(133,68,224,.11) !important; font: 620 8px/1 'Oxanium Variable', sans-serif; letter-spacing: .06em !important; }
 .forge-brand.compact img { width: 27px; height: 27px; }.forge-brand.compact .forge-wordmark { font-size: 14px; }
 small, .muted { color: #7d8997; font-weight: 400; letter-spacing: 0; }
-.toolbar { min-width: 0; display: flex; gap: 7px; overflow-x: auto; scrollbar-width: none; }
+.workspace-actions { min-width: max-content; display: flex; gap: 5px; padding-left: 4px; border-left: 1px solid rgba(77,211,255,.18); }
+.workspace-actions button { border-color: rgba(184,255,77,.28); background: rgba(72,112,34,.18); }
+.toolbar { min-width: 0; display: flex; flex: 1; justify-content: flex-end; gap: 7px; overflow-x: auto; scrollbar-width: none; }
 .toolbar::-webkit-scrollbar { display: none; }
 .toolbar button { flex: 0 0 auto; white-space: nowrap; }
 .danger { color: #ff9a9a; }
@@ -326,6 +328,8 @@ h3 { font-size: 11px; text-transform: uppercase; color: #8795a5; letter-spacing:
 @media (max-width: 760px) {
   .app-header { padding: 0 10px; }
   .brand { max-width: 34%; }
+  .workspace-actions { gap: 3px; }
+  .workspace-actions button { padding-inline: 6px; }
   .workspace-grid { grid-template-columns: minmax(0, 1fr); }
   .explorer, .explorer-resizer { display: none; }
   .editor-area, .git-panel, .git-resizer { grid-column: 1; }

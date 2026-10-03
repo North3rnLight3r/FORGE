@@ -32,8 +32,11 @@ npm ci --omit=peer
 npm run typecheck
 npm run lint
 npm test
+npm run clean
 npm run build
-npm run package:linux
+npm run stage:linux-runtime-metadata
+npx electron-builder --linux --x64 --publish never
+node scripts/write-build-manifest.mjs x64 linux
 node scripts/verify-build-manifest.mjs
 
 version="$(node -p "require('./package.json').version")"
@@ -58,5 +61,5 @@ fi
 echo "Linux packaging succeeded for FORGE $version:"
 printf '  %s\n' "${appimage_artifacts[@]}" "${deb_artifacts[@]}"
 echo "  Verified node-pty: $pty_node"
-echo "  Verified AppImage, DEB, updater metadata, runtime provenance, and build manifest"
+echo "  Verified AppImage, DEB, runtime provenance, and build manifest"
 sha256sum "${appimage_artifacts[@]}" "${deb_artifacts[@]}" > "$output_directory/SHA256SUMS"

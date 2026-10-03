@@ -49,12 +49,11 @@ Environment defaults are `FORGE_AGENT_RUNTIME=hermes`, `FORGE_HERMES_ENDPOINT=ht
 
 `FORGE_AGENT_MAX_RUNTIME_MS` may bound a Native FORGE run between one minute and one hour; the default is 15 minutes. There is no small fixed tool-call or continuation-round limit. Repeated identical calls against an unchanged observed workspace revision are suppressed as lack of progress.
 
-## Update channel
+## Local updates
 
-- **Stable** (default): strictly newer stable semantic versions only.
-- **Beta**: strictly newer beta, release-candidate, or stable versions; alpha versions are rejected.
-
-Legacy `preview` values normalize to `beta`. Both channels reject equal versions, downgrades, drafts, malformed versions, unsupported prerelease identifiers, unsafe release data, and missing updater metadata.
+- Published Stable/Beta releases are download-only distribution artifacts. They do not control the desktop update action.
+- The desktop update action always packages and installs the current local checkout.
+- Pull or switch to the desired commit before selecting **Update from current checkout**. The update action never changes Git refs or downloads release metadata.
 
 ## Tool execution
 
@@ -72,4 +71,4 @@ Do not commit application state or generated artifacts unless a release procedur
 - `apps/desktop/out/`
 - local settings, caches, logs, or decrypted credentials
 
-See [Tool Security](docs/TOOL_SECURITY.md), [Semantic Context](docs/SEMANTIC_CONTEXT.md), and [Release Channels](docs/RELEASE_CHANNELS.md).
+See [Tool Security](docs/TOOL_SECURITY.md), [Semantic Context](docs/SEMANTIC_CONTEXT.md), and [Release distribution](docs/RELEASE_CHANNELS.md).

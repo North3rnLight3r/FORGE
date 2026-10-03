@@ -1,15 +1,8 @@
-# FORGE Release Channels
+# FORGE release distribution
 
-FORGE exposes logical **Stable** and **Beta** choices. Provider metadata channel names remain an internal implementation detail.
+Published Stable/Beta releases are distribution and provenance records only. The desktop application does not query GitHub Releases, select a channel, download an updater feed, or replace a local checkout from a release.
 
-| Channel | Current identity | Eligible newer versions |
-| --- | --- | --- |
-| Stable | normal SemVer | strictly newer normal semantic versions |
-| Beta | `2.5.0-beta` | strictly newer `beta`, `rc`, or normal semantic versions |
-
-Both reject equal/older versions, downgrades, alpha and unsupported prereleases, drafts, malformed versions, unsafe asset URLs, missing metadata, and incompatible platform artifacts. A legacy stored `preview` value migrates to `beta`.
-
-FORGE queries a bounded set of published GitHub Releases, applies semantic eligibility, validates the exact platform feed, disables downgrade permission, configures Electron Updater only after selection, and revalidates the returned version before download.
+The **Update from current checkout** action runs the native `npm run update:<platform>` target (or the FORGE-OS sibling updater on Linux). That target packages the exact source tree in `~/FORGE` and installs the manifest-selected artifact. The source tree may be detached, dirty, or on any local commit; the command never fetches, merges, resets, or changes Git refs.
 
 ## Current published beta
 
@@ -20,7 +13,7 @@ FORGE queries a bounded set of published GitHub Releases, applies semantic eligi
 - `FORGE-2.5.0-beta-universal.dmg`
 - `FORGE-2.5.0-beta-universal.zip`
 - `FORGE-2.5.0-beta-x64.exe`
-- payload blockmaps, `beta-linux.yml`, `beta-mac.yml`, `beta.yml`, `SHA256SUMS`, and `build-manifest.json`
+- payload blockmaps, `SHA256SUMS`, and `build-manifest.json`
 
 GitHub reports the release as a non-draft prerelease, matching the Beta version. Future post-tag changes are not eligible for public publication until the version is incremented.
 

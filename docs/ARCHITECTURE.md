@@ -31,7 +31,7 @@ The Electron main process owns privileged operations. Preload exposes a typed al
 - **Workspace Intelligence** collects and ranks evidence without requiring a completion.
 - **Agent runtime** reasons over a FORGE context packet and requests semantic tools.
 - **ToolRouter** normalizes and validates provider calls, applies persisted execution/network/filesystem policy, invokes services, bounds results, supports cancellation, and records outcomes.
-- **Platform adapters** implement native terminal, packaging, updater, and FORGE-OS differences without changing the shared workspace contract.
+- **Platform adapters** implement native terminal, packaging, local-source lifecycle, and FORGE-OS differences without changing the shared workspace contract.
 
 Conversation deletion never silently deletes files, Git, tasks, memory, or semantic records. A provider switch does not change workspace ownership.
 
@@ -53,7 +53,6 @@ Conversation deletion never silently deletes files, Git, tasks, memory, or seman
 | `@forge/web` | External HTTP controls |
 | `@forge/forge-live` | Contained loopback preview |
 | `@forge/os-integration` | Linux/FORGE-OS platform behavior |
-| `@forge/updater` | Provider-neutral release eligibility/discovery |
 | `@forge/ipc` | Shared renderer/main contracts and runtime events |
 
 ## Intelligence authority
@@ -82,7 +81,7 @@ Tasks, steps, dependencies, attempts, checkpoints, artifacts, process observatio
 
 ## Platform identity
 
-Runtime parity means shared source commit, version, behavior, UI contract, and provenance—not byte-identical native binaries. Each platform records and verifies its own executable and `app.asar` hashes:
+Runtime parity means shared source commit, version, behavior, UI contract, and provenance—not byte-identical native binaries. Each platform records and verifies its own executable and `app.asar` hashes. The native lifecycle is local-source only: package creates the manifest, install consumes it, update runs package then install, and uninstall removes only the installed runtime. There is no Electron release-feed updater or second artifact selector:
 
 - Linux: AppImage/DEB and FORGE-OS runtime contract;
 - macOS: universal DMG/ZIP and installed bundle/session launcher;

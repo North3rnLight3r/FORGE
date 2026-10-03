@@ -24,7 +24,7 @@ The published annotated `v2.5.0-beta` tag resolves to `430796e2b4de543f5e9c6b8a8
 | Browser/web | Sandboxed public HTTP(S) Browser, tabs/bookmarks/history, bounded page reads/finds, URL/DNS/redirect validation |
 | FORGE Live | Contained loopback static server, ports 5500–5599, in-memory reload client, Browser preview |
 | Runtime profiles | Native and Hermes/Ollama profiles share the intelligence layer, context, ToolRouter, audit, and cancellation; endpoint reachability and safe fallback are verified |
-| Packaging | Linux AppImage/DEB, universal macOS DMG/ZIP, Windows x64 NSIS, runtime metadata, manifests, hashes, updater YAML, installed-runtime verifiers |
+| Packaging | Linux AppImage/DEB, universal macOS DMG/ZIP, Windows x64 NSIS, runtime metadata, manifests, hashes, installed-runtime verifiers, and local-source lifecycle commands |
 | Living UI | Shared v2.5 identity, bounded Three.js aurora, glass surfaces, reduced-motion support, opt-out sounds, and real context/memory/process telemetry |
 
 ## Execution-security state
@@ -35,7 +35,7 @@ Enforced boundaries remain: semantic schema validation, configured filesystem/ne
 
 ## Published release
 
-[`v2.5.0-beta`](https://github.com/North3rnLight3r/FORGE/releases/tag/v2.5.0-beta) was published on 2026-08-31 with Linux x64, universal macOS, and Windows x64 packages plus updater metadata, blockmaps, `SHA256SUMS`, and a build manifest. GitHub reports it as a non-draft prerelease.
+[`v2.5.0-beta`](https://github.com/North3rnLight3r/FORGE/releases/tag/v2.5.0-beta) was published on 2026-08-31 with Linux x64, universal macOS, and Windows x64 packages, blockmaps, `SHA256SUMS`, and a build manifest. GitHub reports it as a non-draft prerelease. Current desktop updates are sourced from the local checkout rather than that release.
 
 The published macOS package is not claimed as Developer ID notarized, and the Windows package is not claimed as publisher signed. Integrity/provenance and platform signing are separate assertions.
 

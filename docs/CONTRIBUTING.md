@@ -37,29 +37,29 @@ npm run build
 git diff --check
 ```
 
-Run packaging only when the change affects build output, the main/preload process, native dependencies, updater behavior, or a release workflow:
+Run packaging only when the change affects build output, the main/preload process, native dependencies, local lifecycle behavior, or a release workflow:
 
 ```sh
-npm run package:mac:universal
+npm run package:macos
 node scripts/verify-build-manifest.mjs
-npm run install:mac
+npm run install:macos
 forge-session --runtime-info
 ```
 
-Native packaging procedures are documented in [Native packaging](PACKAGING.md). Run the script for the target platform on that platform:
+Native packaging procedures are documented in [Native packaging](PACKAGING.md). Run the canonical npm target for the target platform on that platform:
 
 ```sh
-./scripts/package-macos.sh
-./scripts/package-linux.sh
+npm run package:macos
+npm run package:linux
 ```
 
 ```powershell
-.\scripts\package-windows.ps1
+npm run package:windows
 ```
 
 Windows and Linux artifacts require native Windows/Linux runners because `node-pty` is native. Packaging artifact verification does not replace a packaged-runtime acceptance pass.
 
-Do not claim a packaged-runtime behavior from source-level tests alone. Test the packaged app separately when the change affects IPC, terminal sessions, updater discovery, application identity, or macOS behavior.
+Do not claim a packaged-runtime behavior from source-level tests alone. Test the packaged app separately when the change affects IPC, terminal sessions, local update/install behavior, application identity, or macOS behavior.
 
 ## 🧱 Work with the architecture
 

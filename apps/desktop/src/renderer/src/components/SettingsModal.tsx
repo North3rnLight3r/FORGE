@@ -26,7 +26,6 @@ export default function SettingsModal({ onClose, initialSection = 'api' }: { onC
   const [clearApiKey, setClearApiKey] = useState(false);
   const [clearGithubToken, setClearGithubToken] = useState(false);
   const [webResearchEnabled, setWebResearchEnabled] = useState(false);
-  const [updateChannel, setUpdateChannel] = useState<'stable' | 'beta'>('stable');
   const [agentRuntime, setAgentRuntime] = useState<'native' | 'hermes'>('native');
   const [hermesCommand, setHermesCommand] = useState('');
   const [hermesEndpoint, setHermesEndpoint] = useState('');
@@ -65,7 +64,7 @@ export default function SettingsModal({ onClose, initialSection = 'api' }: { onC
 
   useEffect(() => {
     getData<UserSettings>('settings.get').then((value) => {
-      setSettings(value); setApiBaseUrl(value.apiBaseUrl); setApiModel(value.apiModel); setGithubUsername(value.githubUsername); setWebResearchEnabled(value.webResearchEnabled); setUpdateChannel(value.updateChannel); setAgentRuntime(value.agentRuntime); setHermesCommand(value.hermesCommand); setHermesEndpoint(value.hermesEndpoint); setEmbeddingEnabled(value.embeddingEnabled); setEmbeddingBaseUrl(value.embeddingBaseUrl); setEmbeddingModel(value.embeddingModel); setContextTokenBudget(value.contextTokenBudget); setAgentExecutionMode(value.agentExecutionMode); setFilesystemScope(value.filesystemScope); setProjectTreeRoot(value.projectTreeRoot); setNetworkAccess(value.networkAccess); setProcessMode(value.processMode); setProcessTimeoutMs(value.processTimeoutMs); setBackgroundTaskTimeoutMs(value.backgroundTaskTimeoutMs); setAutonomousTaskContinuation(value.autonomousTaskContinuation); setAutoRepairToolArguments(value.autoRepairToolArguments); setBackgroundTasksEnabled(value.backgroundTasksEnabled); setAutoIndex(value.autoIndex); setAutoRepairIndex(value.autoRepairIndex);
+      setSettings(value); setApiBaseUrl(value.apiBaseUrl); setApiModel(value.apiModel); setGithubUsername(value.githubUsername); setWebResearchEnabled(value.webResearchEnabled); setAgentRuntime(value.agentRuntime); setHermesCommand(value.hermesCommand); setHermesEndpoint(value.hermesEndpoint); setEmbeddingEnabled(value.embeddingEnabled); setEmbeddingBaseUrl(value.embeddingBaseUrl); setEmbeddingModel(value.embeddingModel); setContextTokenBudget(value.contextTokenBudget); setAgentExecutionMode(value.agentExecutionMode); setFilesystemScope(value.filesystemScope); setProjectTreeRoot(value.projectTreeRoot); setNetworkAccess(value.networkAccess); setProcessMode(value.processMode); setProcessTimeoutMs(value.processTimeoutMs); setBackgroundTaskTimeoutMs(value.backgroundTaskTimeoutMs); setAutonomousTaskContinuation(value.autonomousTaskContinuation); setAutoRepairToolArguments(value.autoRepairToolArguments); setBackgroundTasksEnabled(value.backgroundTasksEnabled); setAutoIndex(value.autoIndex); setAutoRepairIndex(value.autoRepairIndex);
     }).catch((cause) => setError(cause instanceof Error ? cause.message : String(cause)));
     getData<AppBuildInfo>('app.build.info').then(setBuildInfo).catch((cause) => setError(cause instanceof Error ? cause.message : String(cause)));
     getData<AgentRuntimeStatusView>('settings.runtime.status').then(setRuntimeStatus).catch((cause) => setError(cause instanceof Error ? cause.message : String(cause)));
@@ -103,7 +102,7 @@ export default function SettingsModal({ onClose, initialSection = 'api' }: { onC
   const save = async (): Promise<void> => {
     setBusy(true); setError(null); setMessage(null);
     try {
-      const saved = await getData<UserSettings>('settings.save', { apiBaseUrl, apiModel, apiKey, clearApiKey, githubUsername, githubToken, clearGithubToken, webResearchEnabled, updateChannel, agentRuntime, hermesCommand, hermesEndpoint, embeddingEnabled, embeddingProvider: 'openai-compatible', embeddingBaseUrl, embeddingModel, embeddingApiKey, clearEmbeddingApiKey, contextTokenBudget, agentExecutionMode, filesystemScope, projectTreeRoot, networkAccess, processMode, processTimeoutMs, backgroundTaskTimeoutMs, autonomousTaskContinuation, autoRepairToolArguments, backgroundTasksEnabled, autoIndex, autoRepairIndex });
+      const saved = await getData<UserSettings>('settings.save', { apiBaseUrl, apiModel, apiKey, clearApiKey, githubUsername, githubToken, clearGithubToken, webResearchEnabled, agentRuntime, hermesCommand, hermesEndpoint, embeddingEnabled, embeddingProvider: 'openai-compatible', embeddingBaseUrl, embeddingModel, embeddingApiKey, clearEmbeddingApiKey, contextTokenBudget, agentExecutionMode, filesystemScope, projectTreeRoot, networkAccess, processMode, processTimeoutMs, backgroundTaskTimeoutMs, autonomousTaskContinuation, autoRepairToolArguments, backgroundTasksEnabled, autoIndex, autoRepairIndex });
       setSettings(saved); setApiKey(''); setGithubToken(''); setEmbeddingApiKey(''); setClearApiKey(false); setClearGithubToken(false); setClearEmbeddingApiKey(false); setMessage('Settings saved securely.');
       setRuntimeStatus(await getData<AgentRuntimeStatusView>('settings.runtime.status'));
       setSkills(await getData<SkillDescriptor[]>('agent.skills.list').catch(() => []));
@@ -247,11 +246,10 @@ export default function SettingsModal({ onClose, initialSection = 'api' }: { onC
         </section>
 
         <section className="settings-section">
-          <div className="settings-section-title"><div><span>TOOLS & UPDATES</span><h3>External research and release channel</h3></div><em className={webResearchEnabled ? 'configured' : ''}>{webResearchEnabled ? 'Web enabled' : 'Web disabled'}</em></div>
+          <div className="settings-section-title"><div><span>TOOLS & UPDATES</span><h3>External research and local updates</h3></div><em className={webResearchEnabled ? 'configured' : ''}>{webResearchEnabled ? 'Web enabled' : 'Web disabled'}</em></div>
           <label className="settings-check"><input type="checkbox" checked={webResearchEnabled} onChange={(event) => setWebResearchEnabled(event.target.checked)} /> Enable structured external web research</label>
           <p className="settings-help">Web tools run through the agentic tool runtime, retain exact query or URL audit records, block local networks, and never upload workspace files automatically.</p>
-          <label>Update channel<select value={updateChannel} onChange={(event) => setUpdateChannel(event.target.value as 'stable' | 'beta')}><option value="stable">Stable (default)</option><option value="beta">Beta (beta, release candidate)</option></select></label>
-          <p className="settings-help">Stable installations never receive beta builds unless Beta is selected explicitly. Existing Preview preferences migrate to Beta.</p>
+          <p className="settings-help">Updates always rebuild and install the current local checkout. Pull or switch to the source you want first; FORGE never downloads a release or changes Git refs from this control.</p>
         </section>
 
         <WorkspaceDataPanel />

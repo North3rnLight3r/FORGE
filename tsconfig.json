@@ -20,7 +20,6 @@
       , "@forge/tool-runtime": ["packages/tool-runtime/src/index.ts"]
       , "@forge/shell": ["packages/shell/src/index.ts"]
       , "@forge/web": ["packages/web/src/index.ts"]
-      , "@forge/updater": ["packages/updater/src/index.ts"]
       , "@forge/tasks": ["packages/tasks/src/index.ts"]
       , "@forge/os-integration": ["packages/os-integration/src/index.ts"]
       , "@forge/agent-runtime": ["packages/agent-runtime/src/index.ts"]

@@ -23,7 +23,7 @@ async function fallbackResponse<C extends IPCChannel>(channel: C): Promise<IPCRe
     case 'app.build.info.copy':
       return { success: true, data: { version: '2.4.0-beta-dev', channel: 'development', commit: 'unavailable in browser preview', buildDate: new Date().toISOString(), runtime: 'development', rendererSource: 'development URL', platform: navigator.platform, architecture: 'browser' } } as any;
     case 'settings.get':
-      return { success: true, data: { apiBaseUrl: 'https://api.openai.com/v1', apiModel: 'gpt-5.6-sol', apiKeyConfigured: false, githubUsername: '', githubTokenConfigured: false, secureStorageAvailable: false, webResearchEnabled: true, updateChannel: 'stable', agentRuntime: 'native', hermesCommand: '', hermesEndpoint: '', embeddingEnabled: false, embeddingProvider: 'openai-compatible', embeddingBaseUrl: 'http://127.0.0.1:11434/v1', embeddingModel: 'qwen3-embedding:0.6b', embeddingApiKeyConfigured: false, contextTokenBudget: 32000 } } as any;
+      return { success: true, data: { apiBaseUrl: 'https://api.openai.com/v1', apiModel: 'gpt-5.6-sol', apiKeyConfigured: false, githubUsername: '', githubTokenConfigured: false, secureStorageAvailable: false, webResearchEnabled: true, agentRuntime: 'native', hermesCommand: '', hermesEndpoint: '', embeddingEnabled: false, embeddingProvider: 'openai-compatible', embeddingBaseUrl: 'http://127.0.0.1:11434/v1', embeddingModel: 'qwen3-embedding:0.6b', embeddingApiKeyConfigured: false, contextTokenBudget: 32000 } } as any;
     case 'workspace.layout.get':
       return { success: true, data: { explorerWidth: 245, intelligenceWidth: 360, bottomHeight: 240, contextHeight: 300 } } as any;
     case 'runtime.telemetry':

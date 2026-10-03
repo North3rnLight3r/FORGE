@@ -53,25 +53,25 @@ The current packages are not backed by Apple Developer ID notarization or Window
 Run the native entry point on the operating system that will run the package:
 
 ```sh
-# macOS: trusted main, package, verify, install, and open
-npm run update:mac
+# macOS: package and install the current checkout
+npm run update:macos
 ```
 
 ```powershell
-# Windows: trusted main, package, verify, install, and smoke-check
-npm run update:win
+# Windows: package and install the current checkout
+npm run update:windows
 ```
 
 ```sh
-# Linux: build and verify AppImage, DEB, metadata, and manifest
-./scripts/package-linux.sh
+# Linux: package and install the current checkout
+npm run update:linux
 ```
 
-The macOS and Windows updaters require `main`, the trusted GitHub origin, forward-only history, and no source changes outside `.obsidian`. Windows installation requires FORGE to be closed. FORGE-OS owns its integrated Linux installation through its sibling repository.
+Every update command builds from the checkout in `~/FORGE` exactly as it exists when the command starts. It never fetches a release, merges a remote ref, resets local work, or selects a stale artifact. Run `npm run package:<platform>` to build only, `npm run install:<platform>` to install an existing verified manifest, and `npm run uninstall:<platform>` to remove the platform installation. FORGE-OS owns the integrated Linux desktop path through its sibling repository and also builds from the current `~/FORGE` checkout.
 
 ## Open and use a workspace
 
-Choose **Open workspace** for a project folder or **Home** for your platform home directory. FORGE opens files in place; it does not import or relocate source. Workspace-owned application state lives at `<workspace>/.forge/metadata.sqlite`.
+Choose the always-visible **Open workspace** or **Home** controls in the header for a project folder or your platform home directory. FORGE opens files in place; it does not import or relocate source. Workspace-owned application state lives at `<workspace>/.forge/metadata.sqlite`.
 
 The desktop includes:
 
@@ -109,7 +109,7 @@ npm run build
 | Topic | Document |
 | --- | --- |
 | Daily use | [User Manual](UserManual.md) |
-| Models, credentials, runtimes, and channels | [User Configuration](UserConfig.md) |
+| Models, credentials, runtimes, and local updates | [User Configuration](UserConfig.md) |
 | Architecture and ownership | [Architecture](docs/ARCHITECTURE.md) |
 | Current implementation | [Project Status](docs/PROJECT_STATUS.md) |
 | Agent capabilities | [Agent Tools](docs/AGENT_TOOLS.md) |

@@ -24,18 +24,21 @@
     "dev": "electron-vite dev apps/desktop",
     "start-renderer": "vite apps/desktop/src/renderer",
     "build": "npm run typecheck && electron-vite build apps/desktop",
-    "clean:dist": "rimraf dist_electron",
     "stage:mac-runtime-metadata": "node scripts/stage-runtime-metadata.mjs darwin",
     "stage:win-runtime-metadata": "node scripts/stage-runtime-metadata.mjs win32",
     "stage:linux-runtime-metadata": "node scripts/stage-runtime-metadata.mjs linux",
-    "package:mac": "npm run clean:dist && npm run build && npm run stage:mac-runtime-metadata && electron-builder --mac --arm64 --publish never && node scripts/write-build-manifest.mjs arm64",
-    "package:mac:universal": "npm run clean:dist && npm run build && npm run stage:mac-runtime-metadata && electron-builder --mac --universal --publish never && node scripts/write-build-manifest.mjs universal",
-    "package:mac:all": "npm run clean:dist && npm run build && npm run stage:mac-runtime-metadata && electron-builder --mac --arm64 --publish never && electron-builder --mac --universal --publish never && node scripts/write-build-manifest.mjs arm64,universal",
-    "package:win": "npm run clean:dist && npm run build && npm run stage:win-runtime-metadata && electron-builder --win --x64 --publish never && node scripts/write-build-manifest.mjs x64 win32",
-    "package:linux": "npm run clean:dist && npm run build && npm run stage:linux-runtime-metadata && electron-builder --linux --x64 --publish never && node scripts/write-build-manifest.mjs x64 linux",
-    "install:mac": "bash scripts/install-mac.sh",
-    "update:mac": "bash scripts/update-macos.sh",
-    "update:win": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/update-windows.ps1",
+    "package:linux": "bash scripts/package-linux.sh",
+    "package:windows": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package-windows.ps1",
+    "package:macos": "bash scripts/package-macos.sh",
+    "install:linux": "bash scripts/install-linux.sh",
+    "install:windows": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install-windows.ps1",
+    "install:macos": "bash scripts/install-macos.sh",
+    "update:linux": "bash scripts/update-linux.sh",
+    "update:windows": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/update-windows.ps1",
+    "update:macos": "bash scripts/update-macos.sh",
+    "uninstall:linux": "bash scripts/uninstall-linux.sh",
+    "uninstall:windows": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/uninstall-windows.ps1",
+    "uninstall:macos": "bash scripts/uninstall-macos.sh",
     "preview": "electron-vite preview apps/desktop",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "verify:release-version": "node scripts/verify-release-version.mjs",
@@ -60,7 +63,6 @@
       "package.json"
     ],
     "asar": true,
-    "generateUpdatesFilesForAllChannels": true,
     "asarUnpack": [
       "node_modules/node-pty/**/*"
     ],
@@ -68,15 +70,6 @@
       {
         "from": "build/forge-runtime.json",
         "to": "forge-runtime.json"
-      }
-    ],
-    "publish": [
-      {
-        "provider": "github",
-        "owner": "North3rnLight3r",
-        "repo": "FORGE",
-        "releaseType": "prerelease",
-        "channel": "beta"
       }
     ],
     "mac": {
@@ -167,7 +160,6 @@
     "@xterm/addon-fit": "^0.10.0",
     "@xterm/xterm": "^5.5.0",
     "dompurify": "^3.4.13",
-    "electron-updater": "^6.8.9",
     "marked": "^15.0.0",
     "monaco-editor": "0.53.0",
     "node-pty": "^1.1.0",

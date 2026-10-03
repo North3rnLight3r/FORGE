@@ -241,7 +241,6 @@ export function releaseTaskTemplate(version: string, originatingConversationId?:
     ['Lint', 'Run static lint validation.', 2, 'task.process.start', ['Exit code is zero']],
     ['Typecheck', 'Run the TypeScript compiler without emitting.', 2, 'task.process.start', ['Exit code is zero']],
     ['Production build', 'Build production Electron bundles.', 2, 'task.process.start', ['Exit code is zero', 'Bundles exist']],
-    ['ARM64 package', 'Create the ARM64 macOS package.', 2, 'task.process.start', ['DMG and ZIP artifacts exist']],
     ['Universal package', 'Create the universal macOS package.', 2, 'task.process.start', ['Universal DMG and ZIP artifacts exist']],
     ['Commit', 'Commit the exact validated staged source set.', 2, 'git.commit', ['Commit SHA is recorded']],
     ['Push', 'Push the validated feature branch.', 2, 'git.push', ['Remote branch contains commit']],
@@ -253,12 +252,10 @@ export function releaseTaskTemplate(version: string, originatingConversationId?:
     ['DMG upload', 'Upload the validated DMG serially.', 2, 'web.open', ['Remote DMG exists']],
     ['ZIP upload', 'Upload the validated ZIP after the DMG.', 2, 'web.open', ['Remote ZIP exists']],
     ['Blockmap verification', 'Verify expected blockmap assets.', 0, 'web.fetch', ['Required blockmaps exist']],
-    ['Updater metadata verification', 'Validate beta or latest updater YAML.', 0, 'web.fetch', ['Updater metadata references correct assets']],
     ['Remote SHA verification', 'Compare remote assets with validated local hashes.', 0, 'web.fetch', ['Every remote SHA matches']],
     ['Release publication', 'Publish the release only after provenance checks.', 2, 'web.open', ['Release is published and not draft']],
     ['Local installation', 'Install the exact validated application package.', 2, 'shell.run', ['Installed bundle identity is recorded']],
     ['Runtime diagnostics', 'Verify packaged runtime identity and security diagnostics.', 0, 'terminal.read', ['Runtime diagnostics match the release']],
-    ['Updater verification', 'Verify the selected logical update channel behavior.', 2, 'shell.run', ['Updater result is recorded']],
     ['Final handoff', 'Generate the authoritative incomplete-or-complete release handoff.', 1, 'task.handoff', ['Handoff Markdown exists']]
   ];
   const steps: TaskStepDraft[] = specifications.map(

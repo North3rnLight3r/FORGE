@@ -93,9 +93,9 @@ Workspace open, file changes, and task/memory changes refresh the index incremen
 
 ## 11. Updates and installation
 
-Stable accepts only strictly newer normal semantic versions. Beta accepts only strictly newer `beta`, `rc`, or stable versions. Equal versions, downgrades, alpha versions, drafts, malformed releases, unsafe asset URLs, and missing metadata are rejected before Electron Updater receives a feed. Legacy `preview` settings migrate to Beta.
+The update control is source-local. It never queries release channels, downloads a published build, merges a remote ref, or resets your checkout. Pull or switch to the exact source you want first; FORGE packages and installs that current checkout.
 
-Use **Check for updates** for published releases or the native source updater for a verified local build. Windows source updates require FORGE to be closed. See [Packaging](docs/PACKAGING.md) and [Release Channels](docs/RELEASE_CHANNELS.md).
+Use the **Update from current checkout** control for a verified local build. Windows source updates require FORGE to be closed. See [Packaging](docs/PACKAGING.md) and [Release distribution](docs/RELEASE_CHANNELS.md).
 
 ## 12. Troubleshooting
 
@@ -106,7 +106,7 @@ Use **Check for updates** for published releases or the native source updater fo
 | Model is unavailable | Refresh the provider catalog, validate the exact ID, and verify endpoint/key settings. |
 | Local model does not call tools | Use the built-in conversation path with a tool-capable OpenAI-compatible model; a raw terminal chat is the model vendor's CLI and has no hidden FORGE bridge. |
 | Semantic context is degraded | Validate the embedding endpoint/model or disable semantic context; ordinary workspace tools continue to work. |
-| Windows install refuses | Close every FORGE process, confirm a clean trusted `main`, and rerun `npm run update:win`. |
+| Windows install refuses | Close every FORGE process, then rerun `npm run update:windows` from the checkout you want to install. |
 | macOS blocks launch | Verify the package source/hash, then use the normal macOS security UI. FORGE does not clear quarantine or disable Gatekeeper. |
 
 Configuration details are in [UserConfig.md](UserConfig.md). Current capability details are in [docs/AGENT_TOOLS.md](docs/AGENT_TOOLS.md).

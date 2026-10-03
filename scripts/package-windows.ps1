@@ -38,7 +38,13 @@ Invoke-NpmChecked ci
 Invoke-NpmChecked run typecheck
 Invoke-NpmChecked run lint
 Invoke-NpmChecked test
-Invoke-NpmChecked run package:win
+Invoke-NpmChecked run clean
+Invoke-NpmChecked run build
+Invoke-NpmChecked run stage:win-runtime-metadata
+& npx electron-builder --win --x64 --publish never
+if ($LASTEXITCODE -ne 0) { throw "electron-builder failed with exit code $LASTEXITCODE." }
+& node scripts/write-build-manifest.mjs x64 win32
+if ($LASTEXITCODE -ne 0) { throw "Writing the Windows build manifest failed with exit code $LASTEXITCODE." }
 
 & node scripts/verify-build-manifest.mjs
 if ($LASTEXITCODE -ne 0) {
@@ -62,6 +68,5 @@ foreach ($Resource in $RequiredPtyResources) {
 
 Write-Host "Windows packaging succeeded for FORGE ${Version}:"
 Write-Host "  $InstallerPath"
-Write-Host "  Verified NSIS installer, blockmap, updater metadata, runtime provenance, and build manifest"
+Write-Host "  Verified NSIS installer, blockmap, runtime provenance, and build manifest"
 Write-Host "  Verified Windows node-pty resources in $PtyRoot"
-

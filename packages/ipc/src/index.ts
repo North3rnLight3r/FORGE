@@ -1,5 +1,3 @@
-import { gt, prerelease, valid } from 'semver';
-
 export type IPCResult<T> = { success: true; data: T } | { success: false; error: { message: string; code?: string } };
 
 export interface FileNode {
@@ -96,21 +94,6 @@ export function buildReleaseIdentity(baseVersion: string, packaged: boolean): Pi
   return { version: baseVersion, channel: baseVersion.includes('-') ? 'beta' : 'stable' };
 }
 
-export function normalizeUpdateChannel(value: unknown): 'stable' | 'beta' {
-  return value === 'beta' || value === 'preview' ? 'beta' : 'stable';
-}
-
-export function buildUpdatePolicy(channel: 'stable' | 'beta'): { allowPrerelease: boolean; allowDowngrade: false } {
-  return { allowPrerelease: channel === 'beta', allowDowngrade: false };
-}
-
-export function isUpdateVersionEligible(currentVersion: string, candidateVersion: string, channel: 'stable' | 'beta'): boolean {
-  if (!valid(currentVersion) || !valid(candidateVersion) || !gt(candidateVersion, currentVersion)) return false;
-  const identifiers = prerelease(candidateVersion);
-  if (identifiers === null) return true;
-  return channel === 'beta' && typeof identifiers[0] === 'string' && ['beta', 'rc'].includes(identifiers[0]);
-}
-
 export function formatAppBuildInfo(info: AppBuildInfo): string {
   return [
     `FORGE v${info.version}`,
@@ -131,7 +114,6 @@ export interface UserSettings {
   githubTokenConfigured: boolean;
   secureStorageAvailable: boolean;
   webResearchEnabled: boolean;
-  updateChannel: 'stable' | 'beta';
   agentRuntime: 'native' | 'hermes';
   hermesCommand: string;
   hermesEndpoint: string;
@@ -164,7 +146,6 @@ export interface SettingsSaveRequest {
   githubToken?: string;
   clearGithubToken?: boolean;
   webResearchEnabled: boolean;
-  updateChannel: 'stable' | 'beta';
   agentRuntime?: 'native' | 'hermes';
   hermesCommand?: string;
   hermesEndpoint?: string;

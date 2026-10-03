@@ -27,10 +27,11 @@ npm ci
 npm run typecheck
 npm run lint
 npm test
+npm run clean
 npm run build
-
-# Keep the repository's established universal macOS target and its manifest writer.
-npm run package:mac:universal
+npm run stage:mac-runtime-metadata
+npx electron-builder --mac --universal --publish never
+node scripts/write-build-manifest.mjs universal
 node scripts/verify-build-manifest.mjs
 
 version="$(node -p "require('./package.json').version")"
